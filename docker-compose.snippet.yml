@@ -1,0 +1,31 @@
+# Snippet to append to your existing OpenClaw docker-compose.yml.
+#
+# Assumes the openclaw service lives in the same compose file, so they
+# share the default Compose network and OpenClaw can reach this server
+# at the hostname "transcription-mcp" (the service name below).
+#
+# Adjust the build context path to match where you cloned this repo
+# relative to your docker-compose.yml.
+
+services:
+  transcription-mcp:
+    build:
+      context: ./transcription-mcp-v2
+    container_name: transcription-mcp
+    restart: unless-stopped
+    environment:
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      # Override defaults if needed:
+      # WORKSPACE_DIR: /workspace
+      # MCP_HOST: 0.0.0.0
+      # MCP_PORT: 8000
+      # MCP_HTTP_PATH: /mcp
+    volumes:
+      - transcription-mcp-workspace:/workspace
+    # No `ports:` needed for OpenClaw access on the internal network.
+    # Uncomment to test from the host:
+    # ports:
+    #   - "8000:8000"
+
+volumes:
+  transcription-mcp-workspace:
