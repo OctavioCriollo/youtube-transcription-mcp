@@ -185,6 +185,28 @@ Do not solve this by enabling `allow_estimated_subtitles=True` globally.
 Estimated subtitles are a fallback for missing word timestamps, not a
 replacement for real Groq word timestamps.
 
+## Production async transcription jobs
+
+Long videos can take several minutes because the MCP may need to download
+audio, split it into remote-size chunks, transcribe each chunk, merge the
+canonical transcript, and generate subtitle artifacts. A single blocking MCP
+tool call gives the client no reliable visibility during that work.
+
+The production path uses a persistent job model:
+
+- `start_youtube_transcription` writes `mcp-jobs/<run_id>/request.json`,
+  starts a separate Python worker process, and returns `run_id` immediately.
+- `get_transcription_status` reads `mcp-jobs/<run_id>/job.json` and, when
+  available, enriches it with v4 `run-state.json` / chunk progress.
+- `get_transcription_result` reads `result.json` only after completion.
+- `cancel_transcription` terminates the worker process tree on a best-effort
+  basis and marks the job canceled.
+
+This design deliberately does not rely only on MCP progress notifications:
+client support varies, while persisted state is visible to any MCP client and
+survives a silent or long-running worker. `notifications/progress` can still be
+added later as a convenience layer, but persisted polling is the contract.
+
 ## Anti-patterns to watch for in future iterations
 
 Three failure modes to recognise if they reappear:

@@ -30,7 +30,7 @@ that with a chain that always finds a working path:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│  transcribe_youtube(url)                                               │
+│  transcribe_youtube(url) or async start/status/result tools             │
 │                                                                        │
 │  1. Groq Whisper        ─ cheapest (~$0.04/hr), needs yt-dlp download  │
 │        │ fails? (e.g. YouTube blocks the host IP)                      │
@@ -50,7 +50,10 @@ hand back low-quality captions as if they were premium audio transcription.
 
 ## 🚀 Features
 
-- **One tool, zero friction.** `transcribe_youtube(url, language?)` — that's the whole API.
+- **Simple sync path.** `transcribe_youtube(url, language?)` still returns a transcript in one call.
+- **Production async path.** `start_youtube_transcription` returns a `run_id`;
+  `get_transcription_status`, `get_transcription_result`, and `cancel_transcription`
+  provide visibility and control for long videos.
 - **Cloud-proof.** The ElevenLabs `source_url` level bypasses YouTube IP blocking entirely.
   No residential proxy, no Tailscale, no cookie juggling required.
 - **Cost-aware.** Tries the cheapest provider first; only escalates when needed.
@@ -158,10 +161,24 @@ or, on a cloud host where YouTube blocks the download:
 
 ### Tool reference
 
+Synchronous tool:
+
 | Parameter  | Type            | Required | Description                                                                 |
 | ---------- | --------------- | -------- | --------------------------------------------------------------------------- |
 | `url`      | string          | ✅       | YouTube URL — `watch?v=`, `youtu.be/`, or `shorts/` forms.                   |
 | `language` | string \| null  | ❌       | ISO 639-1 code (`es`, `en`, `pt`…). Omit for auto-detect. Never translates.  |
+
+Asynchronous production flow:
+
+| Tool                          | Purpose                                                                |
+| ----------------------------- | ---------------------------------------------------------------------- |
+| `start_youtube_transcription` | Starts a background job and returns `run_id` immediately.              |
+| `get_transcription_status`    | Polls persistent status, stage, progress, logs, and v4 chunk progress. |
+| `get_transcription_result`    | Returns the final transcript once `status == "completed"`.             |
+| `cancel_transcription`        | Best-effort cancellation of the worker process and its children.        |
+
+Use the async flow for long videos, production agents, or any client where a
+silent long-running MCP call would look blocked.
 
 ### Response shape
 
@@ -235,7 +252,9 @@ youtube-transcription-mcp/
 ├── src/
 │   ├── transcription_mcp/            # MCP layer (~350 LOC)
 │   │   ├── server.py                 # FastMCP setup, stdio/http dispatch
-│   │   ├── tools.py                  # the transcribe_youtube tool
+│   │   ├── tools.py                  # sync + async MCP tool registration
+│   │   ├── jobs.py                   # persistent async job status/result/cancel
+│   │   ├── worker.py                 # subprocess worker for long transcriptions
 │   │   ├── pipeline.py               # 3-level fallback orchestration
 │   │   ├── youtube_subtitles.py      # captions via youtube-transcript-api
 │   │   └── config.py                 # env-var configuration
@@ -293,7 +312,7 @@ curl -s -X POST http://localhost:8000/mcp \
 
 ## 🗺️ Roadmap
 
-- [ ] Async job model with status polling (for videos > 30 min).
+- [x] Async job model with status polling (for videos > 30 min).
 - [ ] File-upload ingestion (transcribe attachments forwarded from chat, not just YouTube).
 - [ ] Optional SRT / VTT output for the agent.
 - [ ] Diarization passthrough (speaker labels) on the ElevenLabs path.

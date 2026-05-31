@@ -1,0 +1,96 @@
+from __future__ import annotations
+
+import subprocess
+
+
+def test_start_transcription_job_persists_request_and_spawns_worker(monkeypatch, tmp_path):
+    from transcription_mcp import jobs
+
+    calls = []
+
+    class FakePopen:
+        pid = 4321
+
+        def __init__(self, command, **kwargs):
+            calls.append((command, kwargs))
+
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(jobs, "_is_pid_alive", lambda pid: True)
+
+    status = jobs.start_transcription_job(
+        url="https://youtu.be/example",
+        language="es",
+        workspace_dir=tmp_path,
+    )
+
+    run_id = status["run_id"]
+    job_dir = tmp_path / "mcp-jobs" / run_id
+    request = jobs.read_json(job_dir / "request.json")
+    job = jobs.read_json(job_dir / "job.json")
+
+    assert request["url"] == "https://youtu.be/example"
+    assert request["language"] == "es"
+    assert job["status"] == "running"
+    assert job["worker_pid"] == 4321
+    assert calls
+    assert calls[0][0][-3:] == ["-m", "transcription_mcp.worker", str(job_dir)]
+
+
+def test_get_transcription_job_result_returns_completed_payload(tmp_path):
+    from transcription_mcp import jobs
+
+    job_dir = tmp_path / "mcp-jobs" / "mcpjob_test"
+    job_dir.mkdir(parents=True)
+    jobs.write_json_atomic(
+        job_dir / "job.json",
+        {
+            "schema_version": jobs.JOB_SCHEMA_VERSION,
+            "run_id": "mcpjob_test",
+            "url": "https://youtu.be/example",
+            "status": "completed",
+            "stage": "completed",
+            "message": "done",
+            "result_available": True,
+        },
+    )
+    jobs.write_json_atomic(
+        job_dir / "result.json",
+        {"transcript": "hola", "method": "groq"},
+    )
+
+    result = jobs.get_transcription_job_result(
+        run_id="mcpjob_test",
+        workspace_dir=tmp_path,
+    )
+
+    assert result["status"] == "completed"
+    assert result["result_available"] is True
+    assert result["result"]["transcript"] == "hola"
+
+
+def test_cancel_transcription_job_marks_job_canceled(monkeypatch, tmp_path):
+    from transcription_mcp import jobs
+
+    job_dir = tmp_path / "mcp-jobs" / "mcpjob_cancel"
+    job_dir.mkdir(parents=True)
+    jobs.write_json_atomic(
+        job_dir / "job.json",
+        {
+            "schema_version": jobs.JOB_SCHEMA_VERSION,
+            "run_id": "mcpjob_cancel",
+            "url": "https://youtu.be/example",
+            "status": "running",
+            "stage": "v4_transcribing",
+            "message": "running",
+            "worker_pid": 1234,
+        },
+    )
+    monkeypatch.setattr(jobs, "_terminate_process_tree", lambda pid: True)
+
+    status = jobs.cancel_transcription_job(
+        run_id="mcpjob_cancel",
+        workspace_dir=tmp_path,
+    )
+
+    assert status["status"] == "canceled"
+    assert status["stage"] == "canceled"

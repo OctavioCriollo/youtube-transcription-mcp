@@ -12,6 +12,12 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
 from transcription_mcp.config import Config
+from transcription_mcp.jobs import (
+    cancel_transcription_job,
+    get_transcription_job_result,
+    get_transcription_job_status,
+    start_transcription_job,
+)
 from transcription_mcp.pipeline import transcribe_youtube_sync
 
 
@@ -83,5 +89,77 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
         return transcribe_youtube_sync(
             url=url,
             language=language,
+            workspace_dir=config.workspace_dir,
+        )
+
+    @mcp.tool()
+    def start_youtube_transcription(
+        url: Annotated[
+            str,
+            Field(
+                description=(
+                    "Full YouTube URL to transcribe asynchronously. Use this for long videos "
+                    "or when the user needs visible progress instead of a blocking call."
+                )
+            ),
+        ],
+        language: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Optional ISO 639-1 language code (e.g. 'es', 'en', 'pt'). "
+                    "Leave unset for automatic detection."
+                )
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Start a background YouTube transcription job and return a run_id.
+
+        This is the production-safe flow for long videos. The tool returns
+        quickly with `run_id`; call `get_transcription_status(run_id)` until
+        `status == "completed"`, then call `get_transcription_result(run_id)`.
+        """
+        return start_transcription_job(
+            url=url,
+            language=language,
+            workspace_dir=config.workspace_dir,
+        )
+
+    @mcp.tool()
+    def get_transcription_status(
+        run_id: Annotated[
+            str,
+            Field(description="run_id returned by start_youtube_transcription."),
+        ],
+    ) -> dict[str, Any]:
+        """Return persisted status for a background transcription job."""
+        return get_transcription_job_status(
+            run_id=run_id,
+            workspace_dir=config.workspace_dir,
+        )
+
+    @mcp.tool()
+    def get_transcription_result(
+        run_id: Annotated[
+            str,
+            Field(description="run_id returned by start_youtube_transcription."),
+        ],
+    ) -> dict[str, Any]:
+        """Return the final transcript/result for a completed background job."""
+        return get_transcription_job_result(
+            run_id=run_id,
+            workspace_dir=config.workspace_dir,
+        )
+
+    @mcp.tool()
+    def cancel_transcription(
+        run_id: Annotated[
+            str,
+            Field(description="run_id returned by start_youtube_transcription."),
+        ],
+    ) -> dict[str, Any]:
+        """Best-effort cancellation for a running background transcription job."""
+        return cancel_transcription_job(
+            run_id=run_id,
             workspace_dir=config.workspace_dir,
         )

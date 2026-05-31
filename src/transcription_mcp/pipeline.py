@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from transcription_v4.pipeline import transcribe_youtube as v4_transcribe_youtube
 from transcription_v4.providers import ELEVENLABS_PROVIDER, GROQ_PROVIDER
@@ -41,6 +41,8 @@ from transcription_mcp.youtube_subtitles import (
 
 logger = logging.getLogger("transcription_mcp.pipeline")
 
+StatusCallback = Callable[[dict[str, Any]], None]
+
 
 class TranscriptionFailed(RuntimeError):
     """All three transcription methods were exhausted without producing a result."""
@@ -51,11 +53,18 @@ def transcribe_youtube_sync(
     url: str,
     language: str | None,
     workspace_dir: Path,
+    status_callback: StatusCallback | None = None,
 ) -> dict[str, Any]:
     """Run the 3-level transcription chain. Returns the first success."""
     failed_attempts: dict[str, str] = {}
 
     # --- LEVEL 1: Groq (cheapest, needs yt-dlp to download)
+    _emit_status(
+        status_callback,
+        stage="groq_started",
+        message="Trying Groq Whisper with yt-dlp audio download.",
+        method="groq",
+    )
     try:
         run_dir = v4_transcribe_youtube(
             url,
@@ -67,6 +76,13 @@ def transcribe_youtube_sync(
         )
     except Exception as exc:  # noqa: BLE001 — many concrete types from v4 / yt-dlp
         failed_attempts["groq"] = _describe_exception(exc)
+        _emit_status(
+            status_callback,
+            stage="groq_failed",
+            message=failed_attempts["groq"],
+            method="groq",
+            failed_attempts=failed_attempts.copy(),
+        )
         logger.warning(
             "level 1 (groq+yt-dlp) failed: %s",
             failed_attempts["groq"],
@@ -76,6 +92,13 @@ def transcribe_youtube_sync(
         result["method"] = "groq"
         if failed_attempts:
             result["failed_attempts"] = failed_attempts
+        _emit_status(
+            status_callback,
+            stage="completed",
+            message="Transcription completed with Groq.",
+            method="groq",
+            run_dir=str(run_dir),
+        )
         logger.info(
             "transcribed via groq: video=%s lang=%s chars=%d cost=%s",
             result.get("youtube", {}).get("video_id"),
@@ -86,6 +109,13 @@ def transcribe_youtube_sync(
         return result
 
     # --- LEVEL 2: ElevenLabs source_url (cloud-friendly, no yt-dlp needed)
+    _emit_status(
+        status_callback,
+        stage="elevenlabs_started",
+        message="Trying ElevenLabs source_url fallback.",
+        method="elevenlabs",
+        failed_attempts=failed_attempts.copy(),
+    )
     try:
         run_dir = v4_transcribe_youtube(
             url,
@@ -96,6 +126,13 @@ def transcribe_youtube_sync(
         )
     except Exception as exc:  # noqa: BLE001
         failed_attempts["elevenlabs"] = _describe_exception(exc)
+        _emit_status(
+            status_callback,
+            stage="elevenlabs_failed",
+            message=failed_attempts["elevenlabs"],
+            method="elevenlabs",
+            failed_attempts=failed_attempts.copy(),
+        )
         logger.warning(
             "level 2 (elevenlabs source_url) failed: %s",
             failed_attempts["elevenlabs"],
@@ -104,6 +141,14 @@ def transcribe_youtube_sync(
         result = _read_run_artifacts(run_dir)
         result["method"] = "elevenlabs"
         result["failed_attempts"] = failed_attempts
+        _emit_status(
+            status_callback,
+            stage="completed",
+            message="Transcription completed with ElevenLabs.",
+            method="elevenlabs",
+            run_dir=str(run_dir),
+            failed_attempts=failed_attempts.copy(),
+        )
         logger.info(
             "transcribed via elevenlabs: video=%s lang=%s chars=%d cost=%s",
             result.get("youtube", {}).get("video_id"),
@@ -114,10 +159,24 @@ def transcribe_youtube_sync(
         return result
 
     # --- LEVEL 3: YouTube captions (degraded last resort)
+    _emit_status(
+        status_callback,
+        stage="subtitles_started",
+        message="Trying YouTube captions fallback.",
+        method="subtitles",
+        failed_attempts=failed_attempts.copy(),
+    )
     try:
         result = fetch_subtitles_transcript(url, language=language)
     except NoSubtitlesAvailable as exc:
         failed_attempts["subtitles"] = _describe_exception(exc)
+        _emit_status(
+            status_callback,
+            stage="failed",
+            message=failed_attempts["subtitles"],
+            method="subtitles",
+            failed_attempts=failed_attempts.copy(),
+        )
         message = (
             "All transcription methods failed.\n"
             + "\n".join(
@@ -132,6 +191,13 @@ def transcribe_youtube_sync(
         raise TranscriptionFailed(message) from exc
 
     result["failed_attempts"] = failed_attempts
+    _emit_status(
+        status_callback,
+        stage="completed",
+        message="Transcription completed with YouTube captions fallback.",
+        method="subtitles",
+        failed_attempts=failed_attempts.copy(),
+    )
     logger.info(
         "transcribed via subtitles fallback: video=%s lang=%s chars=%d",
         result["youtube"]["video_id"],
@@ -139,6 +205,18 @@ def transcribe_youtube_sync(
         len(result["transcript"]),
     )
     return result
+
+
+def _emit_status(
+    status_callback: StatusCallback | None,
+    **event: Any,
+) -> None:
+    if status_callback is None:
+        return
+    try:
+        status_callback(event)
+    except Exception:  # noqa: BLE001
+        logger.exception("transcription status callback failed")
 
 
 def _describe_exception(exc: BaseException) -> str:
