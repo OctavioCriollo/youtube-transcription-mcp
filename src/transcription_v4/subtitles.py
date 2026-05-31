@@ -86,9 +86,11 @@ class SubtitleBuilder:
     def _segments_with_words(self, transcript: CanonicalTranscript) -> list[Segment]:
         if all(segment.words for segment in transcript.segments):
             return list(transcript.segments)
+        missing_count = sum(1 for segment in transcript.segments if not segment.words)
         if not self.allow_estimated_subtitles:
             raise SubtitleGenerationError(
-                "Subtitle generation requires word timestamps. "
+                "Subtitle generation requires word timestamps; "
+                f"{missing_count} segment(s) have no aligned words. "
                 "Use a provider/model with word timestamps or pass "
                 "--allow-estimated-subtitles."
             )

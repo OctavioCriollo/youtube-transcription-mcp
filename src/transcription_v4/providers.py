@@ -611,14 +611,24 @@ def _groq_segments_from_payload(
     words: list[Word],
 ) -> list[Segment]:
     raw_segments = payload.get("segments") or []
-    segments: list[Segment] = []
+    if not raw_segments:
+        return _words_to_segments(words)
+
+    segment_specs: list[tuple[float, float, str]] = []
     for raw_segment in raw_segments:
         start = float(raw_segment.get("start", 0.0))
         end = float(raw_segment.get("end", 0.0))
-        segment_words = tuple(word for word in words if start <= word.start < end)
         text = str(raw_segment.get("text") or "").strip()
+        segment_specs.append((start, end, text))
+
+    assigned_words = _assign_words_to_segments(words, segment_specs)
+    assigned_word_count = sum(len(segment_words) for segment_words in assigned_words)
+
+    segments: list[Segment] = []
+    for (start, end, text), segment_words in zip(segment_specs, assigned_words):
+        segment_words_tuple = tuple(segment_words)
         if not text and segment_words:
-            text = smart_join(word.text for word in segment_words)
+            text = smart_join(word.text for word in segment_words_tuple)
         if not text:
             continue
         segments.append(
@@ -626,12 +636,68 @@ def _groq_segments_from_payload(
                 start=start,
                 end=end,
                 text=text,
-                words=segment_words,
+                words=segment_words_tuple,
             )
         )
+
+    if segments and words and (
+        assigned_word_count != len(words) or any(not segment.words for segment in segments)
+    ):
+        return _words_to_segments(words)
     if segments:
         return segments
     return _words_to_segments(words)
+
+
+def _assign_words_to_segments(
+    words: list[Word],
+    segment_specs: list[tuple[float, float, str]],
+) -> list[list[Word]]:
+    assigned: list[list[Word]] = [[] for _ in segment_specs]
+    for word in words:
+        segment_index = _best_segment_index_for_word(word, segment_specs)
+        if segment_index is not None:
+            assigned[segment_index].append(word)
+    return assigned
+
+
+def _best_segment_index_for_word(
+    word: Word,
+    segment_specs: list[tuple[float, float, str]],
+    *,
+    tolerance_s: float = 0.05,
+) -> int | None:
+    best_index: int | None = None
+    best_score = 0.0
+    best_distance = float("inf")
+    word_midpoint = (word.start + word.end) / 2.0
+    for index, (start, end, _text) in enumerate(segment_specs):
+        score = _word_segment_alignment_score(word, start, end, tolerance_s=tolerance_s)
+        if score <= 0:
+            continue
+        segment_midpoint = (start + end) / 2.0
+        distance = abs(word_midpoint - segment_midpoint)
+        if score > best_score or (score == best_score and distance < best_distance):
+            best_index = index
+            best_score = score
+            best_distance = distance
+    return best_index
+
+
+def _word_segment_alignment_score(
+    word: Word,
+    segment_start: float,
+    segment_end: float,
+    *,
+    tolerance_s: float,
+) -> float:
+    overlap = min(word.end, segment_end) - max(word.start, segment_start)
+    if overlap > 0:
+        return overlap
+    gap = max(segment_start - word.end, word.start - segment_end, 0.0)
+    if gap <= tolerance_s:
+        return tolerance_s - gap
+    return 0.0
 
 
 def _words_to_segments(words: list[Word], *, max_gap_s: float = 1.0) -> list[Segment]:

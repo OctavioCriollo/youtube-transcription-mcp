@@ -156,6 +156,35 @@ When a need appears for local-only transcription (privacy) or larger
 direct uploads (ElevenLabs accepts 3 GB), the v4 abstraction already
 covers it — add a `provider` argument to the tool, dispatch.
 
+## Corrective: Groq word/segment alignment
+
+2026-05-31 corrective after a real YouTube run:
+
+- Groq returned HTTP 200, transcript text, provider `segments`, and
+  top-level `words` with timestamps.
+- The MCP incorrectly treated Groq as failed because the old normalizer
+  assigned a word to a segment only when `segment.start <= word.start <
+  segment.end`.
+- Real Groq payloads can have words that cross segment boundaries, for
+  example a word that starts just before `segment.start` but overlaps
+  that segment. Those words were dropped from the segment.
+- `SubtitleBuilder` then rejected the transcript because some segments
+  had no aligned words, even though Groq had returned word timestamps.
+
+The fix keeps Groq `words` as the timing source of truth:
+
+- assign each word to exactly one segment by temporal overlap;
+- if a word overlaps multiple segments, use the segment with the largest
+  overlap and break ties by midpoint distance;
+- use a small tolerance for near-boundary timestamp jitter;
+- if provider segment alignment would still lose words or leave text
+  segments without words, rebuild segments from Groq words instead of
+  estimating subtitles globally.
+
+Do not solve this by enabling `allow_estimated_subtitles=True` globally.
+Estimated subtitles are a fallback for missing word timestamps, not a
+replacement for real Groq word timestamps.
+
 ## Anti-patterns to watch for in future iterations
 
 Three failure modes to recognise if they reappear:
