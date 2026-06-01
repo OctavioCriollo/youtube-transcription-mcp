@@ -185,6 +185,35 @@ Do not solve this by enabling `allow_estimated_subtitles=True` globally.
 Estimated subtitles are a fallback for missing word timestamps, not a
 replacement for real Groq word timestamps.
 
+## Corrective: Groq words are canonical text when available
+
+2026-06-01 corrective after a 30-minute YouTube live transcription:
+
+- The run completed with Groq and generated transcript, SRT, VTT, canonical,
+  quality, and audit artifacts.
+- `subtitle_token_parity` failed because `transcript.txt` was built from
+  `segment.text`, while SRT/VTT were built from `segment.words`.
+- The affected tokens were mostly accented Spanish words. The segment text
+  contained degraded forms such as `Tendr`, `decisi`, `hincapi`, and `memor`,
+  while the word-level entries contained `Tendrá`, `decisión`, `hincapié`, and
+  `memorándum`.
+- The raw Groq payload is not persisted, so the project should not assert that
+  Groq itself returned bad segment text. The MCP-owned failure is that the
+  normalizer trusted segment text even when better word-level text existed.
+
+The fix makes Groq word timestamps the canonical text source too:
+
+- provider segment start/end/text are still used to assign words to segments;
+- once words are assigned, `Segment.text` is rebuilt with
+  `smart_join(word.text for word in segment.words)`;
+- when a segment has words, its start/end are reset to the first/last word
+  timestamps;
+- provider segment text remains only a fallback when word timestamps are absent.
+
+This keeps `canonical.json`, `transcript.txt`, SRT, VTT, and audit checks on the
+same text source. It is intentionally not a Spanish-accent repair rule; it fixes
+the broader normalization invariant.
+
 ## Production async transcription jobs
 
 Long videos can take several minutes because the MCP may need to download

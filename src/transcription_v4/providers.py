@@ -627,8 +627,10 @@ def _groq_segments_from_payload(
     segments: list[Segment] = []
     for (start, end, text), segment_words in zip(segment_specs, assigned_words):
         segment_words_tuple = tuple(segment_words)
-        if not text and segment_words:
+        if segment_words_tuple:
             text = smart_join(word.text for word in segment_words_tuple)
+            start = segment_words_tuple[0].start
+            end = segment_words_tuple[-1].end
         if not text:
             continue
         segments.append(
