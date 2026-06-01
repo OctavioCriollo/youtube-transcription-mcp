@@ -187,6 +187,34 @@ Asynchronous production flow:
 Use the async flow for long videos, production agents, or any client where a
 silent long-running MCP call would look blocked.
 
+### Agent workflow guidance
+
+Async job responses include a small guidance contract for LLM clients:
+
+| Field                       | Purpose                                                       |
+| --------------------------- | ------------------------------------------------------------- |
+| `user_visible_message`      | Short status text the agent can show directly to the user.    |
+| `recommended_next_tool`     | Next MCP tool to call, or `null` when no call is required.    |
+| `recommended_poll_seconds`  | Suggested delay before polling again for long-running jobs.   |
+| `agent_instructions`        | Operational instructions for the LLM using the MCP response.  |
+| `progress_percent`          | Rounded 0-100 progress when the MCP can estimate it.          |
+| `available_next_actions`    | Useful actions after a result, such as showing the transcript.|
+| `recommended_artifacts`     | Artifact names that can be fetched with `get_transcription_artifact`. |
+
+The server also exposes the prompt `transcribe_with_progress`. MCP clients that
+support prompts can use it as a built-in workflow for long transcriptions:
+
+1. call a `start_*_transcription` tool;
+2. show `user_visible_message`;
+3. poll `get_transcription_status` using `recommended_poll_seconds`;
+4. call `get_transcription_result` when the job completes;
+5. fetch artifacts only when the user asks for subtitles, timestamps, audit
+   data, or another listed artifact.
+
+This guidance is client-readable metadata. It improves behavior for LLM agents,
+but the MCP cannot force a client UI to display progress if that client ignores
+the returned fields or prompt.
+
 Common optional parameters:
 
 | Parameter        | Type           | Description                                                        |

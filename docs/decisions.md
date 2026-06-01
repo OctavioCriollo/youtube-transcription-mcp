@@ -207,6 +207,32 @@ client support varies, while persisted state is visible to any MCP client and
 survives a silent or long-running worker. `notifications/progress` can still be
 added later as a convenience layer, but persisted polling is the contract.
 
+## LLM self-guidance contract
+
+The MCP should be usable by an LLM client that has no prior conversation
+context. Tool descriptions alone are not enough for long jobs because the
+client must know what to tell the user, when to poll, and when to stop polling.
+
+Async job responses therefore include:
+
+- `user_visible_message`: concise text that is safe to show directly to the
+  user while the job is running or after it reaches a terminal state.
+- `recommended_next_tool`: the next MCP tool the agent should call, or `null`
+  when the response is terminal and no tool call is required.
+- `recommended_poll_seconds`: a conservative polling delay for queued/running
+  jobs.
+- `agent_instructions`: compact operational guidance for the LLM.
+- `progress_percent`, `available_next_actions`, and `recommended_artifacts`
+  when those values are meaningful.
+
+The server also registers a prompt named `transcribe_with_progress` so clients
+with prompt support can request the recommended async workflow explicitly.
+
+This does not replace the persistent job contract and does not guarantee UI
+progress in every MCP client. It is advisory metadata: clients that ignore
+custom fields or prompts may still behave silently. The robust production path
+remains start/status/result polling backed by persisted job files.
+
 ## Production hardening roadmap implementation
 
 The MCP layer exposes production features without changing the default path:

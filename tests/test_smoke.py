@@ -7,6 +7,8 @@ is validated manually through OpenClaw, not here.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 
@@ -73,6 +75,17 @@ def test_server_boots(monkeypatch, tmp_path):
     assert server is not None
     assert (tmp_path / "v4-storage").is_dir()
     assert (tmp_path / "mcp-jobs").is_dir()
+
+
+def test_server_exposes_progress_prompt(monkeypatch, tmp_path):
+    from transcription_mcp.server import create_server
+
+    monkeypatch.setenv("WORKSPACE_DIR", str(tmp_path))
+    server = create_server()
+
+    prompts = asyncio.run(server.list_prompts())
+
+    assert "transcribe_with_progress" in {prompt.name for prompt in prompts}
 
 
 def test_config_reads_optional_runtime_controls(monkeypatch, tmp_path):

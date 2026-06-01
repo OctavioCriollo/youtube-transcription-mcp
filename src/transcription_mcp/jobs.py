@@ -19,6 +19,7 @@ JOB_SCHEMA_VERSION = "mcp-transcription-job-v1"
 TERMINAL_STATUSES = {"completed", "failed", "canceled"}
 SOURCE_TYPES = {"youtube", "media_url", "file"}
 SAFE_RUN_ID_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.")
+DEFAULT_RECOMMENDED_POLL_SECONDS = 20
 
 
 class JobNotFoundError(FileNotFoundError):
@@ -153,11 +154,17 @@ def get_transcription_job_result(
             "status": status["status"],
             "stage": status.get("stage"),
             "message": status.get("message"),
+            "progress": status.get("progress"),
+            "logs": status.get("logs"),
             "result_available": False,
         }
+        if status.get("failed_attempts") is not None:
+            response["failed_attempts"] = status.get("failed_attempts")
+        if status.get("method") is not None:
+            response["method"] = status.get("method")
         if status["status"] == "failed":
             response["error"] = _read_json_optional(job_dir / "error.json")
-        return response
+        return _with_agent_guidance(response, response_type="result")
 
     result_path = job_dir / "result.json"
     if not result_path.exists():
@@ -170,12 +177,15 @@ def get_transcription_job_result(
         )
         return get_transcription_job_result(run_id=run_id, workspace_dir=workspace_dir)
 
-    return {
-        "run_id": run_id,
-        "status": "completed",
-        "result_available": True,
-        "result": read_json(result_path),
-    }
+    return _with_agent_guidance(
+        {
+            "run_id": run_id,
+            "status": "completed",
+            "result_available": True,
+            "result": read_json(result_path),
+        },
+        response_type="result",
+    )
 
 
 def get_transcription_job_artifact(
@@ -192,12 +202,15 @@ def get_transcription_job_artifact(
     result = result_response["result"]
     artifacts = result.get("artifacts", {}) or {}
     if artifact not in artifacts:
-        return {
-            "run_id": run_id,
-            "status": "not_found",
-            "artifact": artifact,
-            "available_artifacts": sorted(artifacts),
-        }
+        return _with_agent_guidance(
+            {
+                "run_id": run_id,
+                "status": "not_found",
+                "artifact": artifact,
+                "available_artifacts": sorted(artifacts),
+            },
+            response_type="artifact",
+        )
 
     run_dir = Path(str(result["run_dir"])).resolve()
     artifact_path = Path(str(artifacts[artifact]["path"])).resolve()
@@ -205,15 +218,18 @@ def get_transcription_job_artifact(
         raise ValueError("artifact path escapes run_dir")
     content = artifact_path.read_text(encoding="utf-8", errors="replace")
     truncated = len(content) > max_chars
-    return {
-        "run_id": run_id,
-        "status": "completed",
-        "artifact": artifact,
-        "path": str(artifact_path),
-        "size_bytes": artifact_path.stat().st_size,
-        "truncated": truncated,
-        "content": content[:max_chars],
-    }
+    return _with_agent_guidance(
+        {
+            "run_id": run_id,
+            "status": "completed",
+            "artifact": artifact,
+            "path": str(artifact_path),
+            "size_bytes": artifact_path.stat().st_size,
+            "truncated": truncated,
+            "content": content[:max_chars],
+        },
+        response_type="artifact",
+    )
 
 
 def cancel_transcription_job(
@@ -481,7 +497,203 @@ def _public_job(job_dir: Path, job: dict[str, Any]) -> dict[str, Any]:
     public = {key: value for key, value in job.items() if key in public_keys}
     public["job_dir"] = str(job_dir)
     public["result_available"] = bool((job_dir / "result.json").exists())
-    return public
+    return _with_agent_guidance(public, response_type="status")
+
+
+def _with_agent_guidance(payload: dict[str, Any], *, response_type: str) -> dict[str, Any]:
+    guided = dict(payload)
+    progress_percent = _progress_percent(guided)
+    if progress_percent is not None:
+        guided["progress_percent"] = progress_percent
+    guided.update(_agent_guidance(guided, response_type=response_type))
+    return guided
+
+
+def _agent_guidance(payload: dict[str, Any], *, response_type: str) -> dict[str, Any]:
+    status = str(payload.get("status") or "unknown")
+    run_id = str(payload.get("run_id") or "")
+    progress_percent = payload.get("progress_percent")
+    artifacts = _artifact_names_from_payload(payload)
+
+    if status in {"queued", "running", "canceling"}:
+        return {
+            "user_visible_message": _running_user_message(payload),
+            "recommended_next_tool": "get_transcription_status",
+            "recommended_poll_seconds": DEFAULT_RECOMMENDED_POLL_SECONDS,
+            "agent_instructions": [
+                "Tell the user the transcription is still processing.",
+                "Keep the run_id and call get_transcription_status again after "
+                "recommended_poll_seconds.",
+                "When status becomes completed, call get_transcription_result before "
+                "answering with the transcript.",
+            ],
+        }
+
+    if status == "completed" and response_type == "status":
+        return {
+            "user_visible_message": (
+                f"Transcription job {run_id} is complete. Fetch the final result."
+            ),
+            "recommended_next_tool": "get_transcription_result",
+            "recommended_poll_seconds": None,
+            "agent_instructions": [
+                "Tell the user the transcription has completed.",
+                "Call get_transcription_result with this run_id before giving the transcript.",
+            ],
+        }
+
+    if status == "completed" and response_type == "result":
+        message = "Transcription result is ready."
+        if artifacts:
+            message += " Optional artifacts are available for timestamps, subtitles, or audit data."
+        return {
+            "user_visible_message": message,
+            "recommended_next_tool": None,
+            "recommended_poll_seconds": None,
+            "recommended_artifacts": artifacts,
+            "available_next_actions": _result_next_actions(artifacts),
+            "agent_instructions": [
+                "Use result.transcript as the main answer unless the user requested a format file.",
+                "Do not poll status again; this job is already terminal.",
+                "Use get_transcription_artifact only when the user asks for timestamps, "
+                "subtitles, audit data, or another listed artifact.",
+            ],
+        }
+
+    if status == "completed" and response_type == "artifact":
+        artifact = str(payload.get("artifact") or "artifact")
+        return {
+            "user_visible_message": f"Artifact {artifact} is ready and included in content.",
+            "recommended_next_tool": None,
+            "recommended_poll_seconds": None,
+            "agent_instructions": [
+                "Use content as the artifact body.",
+                "If truncated is true, explain that only the first max_chars were returned.",
+            ],
+        }
+
+    if status == "not_found":
+        artifact = str(payload.get("artifact") or "artifact")
+        return {
+            "user_visible_message": (
+                f"Artifact {artifact} was not found. Available artifacts: "
+                f"{', '.join(artifacts) if artifacts else 'none'}."
+            ),
+            "recommended_next_tool": "get_transcription_artifact" if artifacts else None,
+            "recommended_poll_seconds": None,
+            "recommended_artifacts": artifacts,
+            "agent_instructions": [
+                "Do not retry the same artifact name.",
+                "If the user wants artifact content, call get_transcription_artifact with one "
+                "of the available_artifacts values.",
+            ],
+        }
+
+    if status == "failed":
+        return {
+            "user_visible_message": _terminal_user_message(payload, fallback="Transcription failed."),
+            "recommended_next_tool": None,
+            "recommended_poll_seconds": None,
+            "agent_instructions": [
+                "Tell the user the transcription failed.",
+                "Use error, failed_attempts, and logs if present to explain the likely cause.",
+                "Do not keep polling this run_id unless the job state changes externally.",
+            ],
+        }
+
+    if status == "canceled":
+        return {
+            "user_visible_message": _terminal_user_message(
+                payload,
+                fallback="Transcription was canceled.",
+            ),
+            "recommended_next_tool": None,
+            "recommended_poll_seconds": None,
+            "agent_instructions": [
+                "Tell the user the transcription was canceled.",
+                "Do not call get_transcription_result for this run_id.",
+            ],
+        }
+
+    return {
+        "user_visible_message": _unknown_user_message(payload, progress_percent),
+        "recommended_next_tool": "get_transcription_status",
+        "recommended_poll_seconds": DEFAULT_RECOMMENDED_POLL_SECONDS,
+        "agent_instructions": [
+            "Report user_visible_message to the user.",
+            "Poll get_transcription_status again unless the status becomes terminal.",
+        ],
+    }
+
+
+def _running_user_message(payload: dict[str, Any]) -> str:
+    run_id = str(payload.get("run_id") or "")
+    status = str(payload.get("status") or "running")
+    stage = str(payload.get("stage") or status)
+    message = str(payload.get("message") or "Transcription is processing.")
+    progress_percent = payload.get("progress_percent")
+
+    parts = [f"Transcription job {run_id} is {status} ({stage}).", message]
+    if progress_percent is not None:
+        parts.append(f"Approximate progress: {progress_percent}%.")
+    return " ".join(parts)
+
+
+def _terminal_user_message(payload: dict[str, Any], *, fallback: str) -> str:
+    message = str(payload.get("message") or "").strip()
+    return message or fallback
+
+
+def _unknown_user_message(payload: dict[str, Any], progress_percent: Any) -> str:
+    status = str(payload.get("status") or "unknown")
+    stage = str(payload.get("stage") or status)
+    message = str(payload.get("message") or "Transcription state is being refreshed.")
+    parts = [f"Transcription status is {status} ({stage}).", message]
+    if progress_percent is not None:
+        parts.append(f"Approximate progress: {progress_percent}%.")
+    return " ".join(parts)
+
+
+def _result_next_actions(artifacts: list[str]) -> list[str]:
+    actions = ["respond_with_transcript", "summarize_transcript"]
+    artifact_actions = {
+        "transcript_timestamps_txt": "fetch_timestamped_transcript",
+        "subtitles_srt": "fetch_srt_subtitles",
+        "subtitles_vtt": "fetch_vtt_subtitles",
+        "audit_txt": "inspect_quality_audit",
+    }
+    for artifact in artifacts:
+        action = artifact_actions.get(artifact)
+        if action and action not in actions:
+            actions.append(action)
+    return actions
+
+
+def _artifact_names_from_payload(payload: dict[str, Any]) -> list[str]:
+    available_artifacts = payload.get("available_artifacts")
+    if isinstance(available_artifacts, list):
+        return sorted(str(artifact) for artifact in available_artifacts)
+
+    result = payload.get("result")
+    if isinstance(result, dict):
+        artifacts = result.get("artifacts") or {}
+        if isinstance(artifacts, dict):
+            return sorted(str(artifact) for artifact in artifacts)
+    return []
+
+
+def _progress_percent(payload: dict[str, Any]) -> int | None:
+    status = str(payload.get("status") or "")
+    if status == "completed":
+        return 100
+
+    progress = payload.get("progress")
+    try:
+        progress_float = float(progress)
+    except (TypeError, ValueError):
+        return None
+
+    return max(0, min(100, round(progress_float * 100)))
 
 
 def _read_job(job_dir: Path) -> dict[str, Any]:

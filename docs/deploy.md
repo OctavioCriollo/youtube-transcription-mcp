@@ -118,6 +118,13 @@ In any OpenClaw-connected chat (Telegram, Discord, WebChat):
 
 The agent should call `transcribe_youtube` and reply with the text.
 
+For long videos, production agents should prefer the async tools:
+`start_youtube_transcription`, `get_transcription_status`, and
+`get_transcription_result`. The MCP returns `user_visible_message`,
+`recommended_next_tool`, and `recommended_poll_seconds` so the agent can keep
+the user informed instead of appearing stuck. Clients with prompt support can
+also use the MCP prompt `transcribe_with_progress`.
+
 ## Troubleshooting
 
 ### `uvx: command not found` in OpenClaw logs

@@ -170,7 +170,11 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             Field(description="Optional expected number of speakers for diarization."),
         ] = None,
     ) -> dict[str, Any]:
-        """Start a background YouTube transcription job and return a run_id."""
+        """Start a background YouTube transcription job and return a run_id.
+
+        Agent workflow: show user_visible_message, keep run_id, and follow
+        recommended_next_tool plus recommended_poll_seconds from the response.
+        """
         return start_transcription_job(
             source=url,
             source_type="youtube",
@@ -209,7 +213,11 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             Field(description="Optional expected number of speakers for diarization."),
         ] = None,
     ) -> dict[str, Any]:
-        """Start a background media URL transcription job and return a run_id."""
+        """Start a background media URL transcription job and return a run_id.
+
+        Agent workflow: show user_visible_message, keep run_id, and follow
+        recommended_next_tool plus recommended_poll_seconds from the response.
+        """
         return start_transcription_job(
             source=url,
             source_type="media_url",
@@ -248,7 +256,11 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             Field(description="Optional expected number of speakers for diarization."),
         ] = None,
     ) -> dict[str, Any]:
-        """Start a background local file transcription job and return a run_id."""
+        """Start a background local file transcription job and return a run_id.
+
+        Agent workflow: show user_visible_message, keep run_id, and follow
+        recommended_next_tool plus recommended_poll_seconds from the response.
+        """
         return start_transcription_job(
             source=file_path,
             source_type="file",
@@ -269,7 +281,12 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             Field(description="run_id returned by a start_* transcription tool."),
         ],
     ) -> dict[str, Any]:
-        """Return persisted status for a background transcription job."""
+        """Return persisted status for a background transcription job.
+
+        If status is queued/running/canceling, report user_visible_message and
+        poll again after recommended_poll_seconds. If completed, call
+        get_transcription_result. If failed/canceled, explain the terminal state.
+        """
         return get_transcription_job_status(
             run_id=run_id,
             workspace_dir=config.workspace_dir,
@@ -282,7 +299,12 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             Field(description="run_id returned by a start_* transcription tool."),
         ],
     ) -> dict[str, Any]:
-        """Return the final transcript/result for a completed background job."""
+        """Return the final transcript/result for a completed background job.
+
+        If result_available is false, follow recommended_next_tool. If completed,
+        use result.transcript as the primary answer and fetch artifacts only when
+        the user asks for timestamps, subtitles, or audit data.
+        """
         return get_transcription_job_result(
             run_id=run_id,
             workspace_dir=config.workspace_dir,
@@ -299,7 +321,12 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             Field(description="Artifact name from result.artifacts, e.g. subtitles_srt or transcript_timestamps_txt."),
         ],
     ) -> dict[str, Any]:
-        """Return text content for a completed job artifact by artifact name."""
+        """Return text content for a completed job artifact by artifact name.
+
+        Artifact names come from result.artifacts or recommended_artifacts.
+        Common values include subtitles_srt, subtitles_vtt, transcript_timestamps_txt,
+        and audit_txt.
+        """
         return get_transcription_job_artifact(
             run_id=run_id,
             artifact=artifact,
@@ -318,3 +345,28 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             run_id=run_id,
             workspace_dir=config.workspace_dir,
         )
+
+    @mcp.prompt(
+        name="transcribe_with_progress",
+        title="Transcribe with visible progress",
+        description="Recommended workflow for async transcription with user-visible updates.",
+    )
+    def transcribe_with_progress(source: str, source_type: str = "youtube") -> str:
+        """Guide an agent through a transcription request with progress updates."""
+        return f"""Transcribe this source while keeping the user informed.
+
+Source: {source}
+Source type: {source_type}
+
+Workflow:
+1. For YouTube URLs, call start_youtube_transcription. For other media URLs, call
+   start_media_url_transcription. For local files, call start_file_transcription.
+2. Immediately tell the user the job started using user_visible_message and keep run_id.
+3. While status is queued, running, or canceling, call get_transcription_status after
+   recommended_poll_seconds and report user_visible_message to the user.
+4. When status is completed, call get_transcription_result with the same run_id.
+5. Use result.transcript as the main answer. Use get_transcription_artifact only if the
+   user asks for subtitles, timestamps, audit data, or another listed artifact.
+6. If status is failed or canceled, stop polling and explain the terminal state using
+   user_visible_message plus error, failed_attempts, and logs when present.
+"""
