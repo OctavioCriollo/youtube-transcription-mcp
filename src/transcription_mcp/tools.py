@@ -1,11 +1,12 @@
 """MCP tool definitions.
 
-Each docstring here is read by the LLM agent (OpenClaw) to decide when to
-invoke the tool. Treat it as UX copy, not as a code comment.
+Each docstring here is read by the LLM agent to decide when to invoke the tool.
+Treat it as UX copy, not as a code comment.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated, Any
 
 from mcp.server.fastmcp import FastMCP
@@ -14,11 +15,16 @@ from pydantic import Field
 from transcription_mcp.config import Config
 from transcription_mcp.jobs import (
     cancel_transcription_job,
+    get_transcription_job_artifact,
     get_transcription_job_result,
     get_transcription_job_status,
     start_transcription_job,
 )
-from transcription_mcp.pipeline import transcribe_youtube_sync
+from transcription_mcp.pipeline import (
+    transcribe_file_sync,
+    transcribe_media_url_sync,
+    transcribe_youtube_sync,
+)
 
 
 def register_tools(mcp: FastMCP, config: Config) -> None:
@@ -26,110 +32,241 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
     def transcribe_youtube(
         url: Annotated[
             str,
-            Field(
-                description=(
-                    "Full YouTube URL to transcribe. Accepts youtube.com/watch?v=..., "
-                    "youtu.be/..., and youtube.com/shorts/... forms."
-                )
-            ),
+            Field(description="Full YouTube URL to transcribe."),
         ],
         language: Annotated[
             str | None,
+            Field(description="Optional ISO 639-1 language code. Omit for auto-detect."),
+        ] = None,
+        provider_order: Annotated[
+            str | None,
             Field(
                 description=(
-                    "Optional ISO 639-1 language code (e.g. 'es', 'en', 'pt'). "
-                    "Leave unset for automatic detection — the default and recommended path. "
-                    "Only set when you are certain of the spoken language. Does NOT translate."
+                    "Optional comma-separated providers. Default: groq,elevenlabs,subtitles. "
+                    "Use local only when faster-whisper is installed and local CPU/GPU work is desired."
                 )
             ),
         ] = None,
+        diarize: Annotated[
+            bool,
+            Field(description="Request speaker diarization. Currently supported by ElevenLabs only."),
+        ] = False,
+        num_speakers: Annotated[
+            int | None,
+            Field(description="Optional expected number of speakers for diarization."),
+        ] = None,
     ) -> dict[str, Any]:
-        """Transcribe the audio of a YouTube video into text.
+        """Synchronously transcribe a YouTube video.
 
-        Use this when the user shares a YouTube link and asks for the
-        transcript, the text, what was said, a summary (you summarise the
-        returned transcript), or any similar request requiring the spoken
-        content.
-
-        Three transcription methods are tried in order; first success wins:
-          1. **Groq Whisper** (cheap, ~$0.04/hr). Requires downloading the
-             audio with yt-dlp first. Often blocked on cloud VPS IPs.
-          2. **ElevenLabs Scribe v2** (~$0.22/hr). ElevenLabs downloads
-             the YouTube URL on their infrastructure, bypassing IP blocks.
-             Higher quality than Groq.
-          3. **YouTube auto-captions / CC** (free, degraded). Last resort
-             when both pay providers fail. Often no punctuation, errors
-             on proper nouns.
-
-        How to present the result to the user, based on the `method` field
-        in the response:
-          - `method == "groq"`: deliver the transcript normally. Cheapest
-            and good quality.
-          - `method == "elevenlabs"`: deliver normally. Mention that Groq
-            was unavailable for this video (you can see why in
-            `failed_attempts.groq` if helpful) — quality is still high.
-          - `method == "subtitles"`: deliver the transcript AND warn the
-            user that BOTH pay providers failed (causes in
-            `failed_attempts`), so the result comes from YouTube auto-CC
-            which may be lower quality.
-
-        Returns: transcript, language (detected), duration_s, model,
-        provider, estimated_cost_usd, youtube metadata, method, audit
-        summary, and (when earlier levels failed) `failed_attempts`.
-
-        Latency expectations:
-          - Groq path: under 60 seconds for short videos.
-          - ElevenLabs path: under 90 seconds.
-          - Subtitles path: under 5 seconds.
-
-        Failure: if ALL three paths fail (e.g., private video AND no
-        API keys configured), the error message lists each attempt and
-        its failure reason.
+        Use for short videos or when a blocking call is acceptable. For long
+        videos, prefer `start_youtube_transcription` plus status polling.
         """
         return transcribe_youtube_sync(
             url=url,
             language=language,
             workspace_dir=config.workspace_dir,
+            provider_order=provider_order,
+            diarize=diarize,
+            num_speakers=num_speakers,
+            ytdlp_cookies_file=config.ytdlp_cookies_file,
+            ytdlp_proxy=config.ytdlp_proxy,
+            cache_ttl_hours=config.cache_ttl_hours,
+        )
+
+    @mcp.tool()
+    def transcribe_media_url(
+        url: Annotated[
+            str,
+            Field(description="Public media URL supported by yt-dlp or a direct provider source_url."),
+        ],
+        language: Annotated[
+            str | None,
+            Field(description="Optional ISO 639-1 language code. Omit for auto-detect."),
+        ] = None,
+        provider_order: Annotated[
+            str | None,
+            Field(description="Optional comma-separated providers. Default: groq,elevenlabs."),
+        ] = None,
+        diarize: Annotated[
+            bool,
+            Field(description="Request speaker diarization. Currently supported by ElevenLabs only."),
+        ] = False,
+        num_speakers: Annotated[
+            int | None,
+            Field(description="Optional expected number of speakers for diarization."),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Synchronously transcribe a public media URL.
+
+        This is not the YouTube captions fallback path; it uses audio providers
+        only. Prefer the async tool for long URLs.
+        """
+        return transcribe_media_url_sync(
+            url=url,
+            language=language,
+            workspace_dir=config.workspace_dir,
+            provider_order=provider_order,
+            diarize=diarize,
+            num_speakers=num_speakers,
+            ytdlp_cookies_file=config.ytdlp_cookies_file,
+            ytdlp_proxy=config.ytdlp_proxy,
+            cache_ttl_hours=config.cache_ttl_hours,
+        )
+
+    @mcp.tool()
+    def transcribe_file(
+        file_path: Annotated[
+            str,
+            Field(description="Absolute path to a local audio or video file visible to the MCP host."),
+        ],
+        language: Annotated[
+            str | None,
+            Field(description="Optional ISO 639-1 language code. Omit for auto-detect."),
+        ] = None,
+        provider_order: Annotated[
+            str | None,
+            Field(description="Optional comma-separated providers. Default: groq,elevenlabs."),
+        ] = None,
+        diarize: Annotated[
+            bool,
+            Field(description="Request speaker diarization. Currently supported by ElevenLabs only."),
+        ] = False,
+        num_speakers: Annotated[
+            int | None,
+            Field(description="Optional expected number of speakers for diarization."),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Synchronously transcribe a local file visible to the MCP host."""
+        return transcribe_file_sync(
+            file_path=Path(file_path),
+            language=language,
+            workspace_dir=config.workspace_dir,
+            provider_order=provider_order,
+            diarize=diarize,
+            num_speakers=num_speakers,
+            cache_ttl_hours=config.cache_ttl_hours,
         )
 
     @mcp.tool()
     def start_youtube_transcription(
         url: Annotated[
             str,
-            Field(
-                description=(
-                    "Full YouTube URL to transcribe asynchronously. Use this for long videos "
-                    "or when the user needs visible progress instead of a blocking call."
-                )
-            ),
+            Field(description="Full YouTube URL to transcribe asynchronously."),
         ],
         language: Annotated[
             str | None,
-            Field(
-                description=(
-                    "Optional ISO 639-1 language code (e.g. 'es', 'en', 'pt'). "
-                    "Leave unset for automatic detection."
-                )
-            ),
+            Field(description="Optional ISO 639-1 language code. Omit for auto-detect."),
+        ] = None,
+        provider_order: Annotated[
+            str | None,
+            Field(description="Optional comma-separated providers. Default: groq,elevenlabs,subtitles."),
+        ] = None,
+        diarize: Annotated[
+            bool,
+            Field(description="Request speaker diarization. Currently supported by ElevenLabs only."),
+        ] = False,
+        num_speakers: Annotated[
+            int | None,
+            Field(description="Optional expected number of speakers for diarization."),
         ] = None,
     ) -> dict[str, Any]:
-        """Start a background YouTube transcription job and return a run_id.
-
-        This is the production-safe flow for long videos. The tool returns
-        quickly with `run_id`; call `get_transcription_status(run_id)` until
-        `status == "completed"`, then call `get_transcription_result(run_id)`.
-        """
+        """Start a background YouTube transcription job and return a run_id."""
         return start_transcription_job(
-            url=url,
+            source=url,
+            source_type="youtube",
             language=language,
             workspace_dir=config.workspace_dir,
+            provider_order=provider_order,
+            diarize=diarize,
+            num_speakers=num_speakers,
+            ytdlp_cookies_file=config.ytdlp_cookies_file,
+            ytdlp_proxy=config.ytdlp_proxy,
+            cache_ttl_hours=config.cache_ttl_hours,
+            max_concurrent_jobs=config.max_concurrent_jobs,
+            job_ttl_hours=config.job_ttl_hours,
+        )
+
+    @mcp.tool()
+    def start_media_url_transcription(
+        url: Annotated[
+            str,
+            Field(description="Public media URL supported by yt-dlp or direct provider fetch."),
+        ],
+        language: Annotated[
+            str | None,
+            Field(description="Optional ISO 639-1 language code. Omit for auto-detect."),
+        ] = None,
+        provider_order: Annotated[
+            str | None,
+            Field(description="Optional comma-separated providers. Default: groq,elevenlabs."),
+        ] = None,
+        diarize: Annotated[
+            bool,
+            Field(description="Request speaker diarization. Currently supported by ElevenLabs only."),
+        ] = False,
+        num_speakers: Annotated[
+            int | None,
+            Field(description="Optional expected number of speakers for diarization."),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Start a background media URL transcription job and return a run_id."""
+        return start_transcription_job(
+            source=url,
+            source_type="media_url",
+            language=language,
+            workspace_dir=config.workspace_dir,
+            provider_order=provider_order,
+            diarize=diarize,
+            num_speakers=num_speakers,
+            ytdlp_cookies_file=config.ytdlp_cookies_file,
+            ytdlp_proxy=config.ytdlp_proxy,
+            cache_ttl_hours=config.cache_ttl_hours,
+            max_concurrent_jobs=config.max_concurrent_jobs,
+            job_ttl_hours=config.job_ttl_hours,
+        )
+
+    @mcp.tool()
+    def start_file_transcription(
+        file_path: Annotated[
+            str,
+            Field(description="Absolute path to a local audio or video file visible to the MCP host."),
+        ],
+        language: Annotated[
+            str | None,
+            Field(description="Optional ISO 639-1 language code. Omit for auto-detect."),
+        ] = None,
+        provider_order: Annotated[
+            str | None,
+            Field(description="Optional comma-separated providers. Default: groq,elevenlabs."),
+        ] = None,
+        diarize: Annotated[
+            bool,
+            Field(description="Request speaker diarization. Currently supported by ElevenLabs only."),
+        ] = False,
+        num_speakers: Annotated[
+            int | None,
+            Field(description="Optional expected number of speakers for diarization."),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Start a background local file transcription job and return a run_id."""
+        return start_transcription_job(
+            source=file_path,
+            source_type="file",
+            language=language,
+            workspace_dir=config.workspace_dir,
+            provider_order=provider_order,
+            diarize=diarize,
+            num_speakers=num_speakers,
+            cache_ttl_hours=config.cache_ttl_hours,
+            max_concurrent_jobs=config.max_concurrent_jobs,
+            job_ttl_hours=config.job_ttl_hours,
         )
 
     @mcp.tool()
     def get_transcription_status(
         run_id: Annotated[
             str,
-            Field(description="run_id returned by start_youtube_transcription."),
+            Field(description="run_id returned by a start_* transcription tool."),
         ],
     ) -> dict[str, Any]:
         """Return persisted status for a background transcription job."""
@@ -142,7 +279,7 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
     def get_transcription_result(
         run_id: Annotated[
             str,
-            Field(description="run_id returned by start_youtube_transcription."),
+            Field(description="run_id returned by a start_* transcription tool."),
         ],
     ) -> dict[str, Any]:
         """Return the final transcript/result for a completed background job."""
@@ -152,10 +289,28 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
         )
 
     @mcp.tool()
+    def get_transcription_artifact(
+        run_id: Annotated[
+            str,
+            Field(description="run_id returned by a start_* transcription tool."),
+        ],
+        artifact: Annotated[
+            str,
+            Field(description="Artifact name from result.artifacts, e.g. subtitles_srt or transcript_timestamps_txt."),
+        ],
+    ) -> dict[str, Any]:
+        """Return text content for a completed job artifact by artifact name."""
+        return get_transcription_job_artifact(
+            run_id=run_id,
+            artifact=artifact,
+            workspace_dir=config.workspace_dir,
+        )
+
+    @mcp.tool()
     def cancel_transcription(
         run_id: Annotated[
             str,
-            Field(description="run_id returned by start_youtube_transcription."),
+            Field(description="run_id returned by a start_* transcription tool."),
         ],
     ) -> dict[str, Any]:
         """Best-effort cancellation for a running background transcription job."""

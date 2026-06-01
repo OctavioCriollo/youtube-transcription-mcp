@@ -36,6 +36,11 @@ class Config:
     host: str
     port: int
     http_path: str
+    ytdlp_cookies_file: Path | None
+    ytdlp_proxy: str | None
+    cache_ttl_hours: float | None
+    max_concurrent_jobs: int
+    job_ttl_hours: float | None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -72,12 +77,21 @@ class Config:
         if not http_path.startswith("/"):
             raise ConfigError(f"MCP_HTTP_PATH must start with '/', got {http_path!r}")
 
+        cookies_file = _optional_path("YT_COOKIES_FILE")
+        if cookies_file is not None and not cookies_file.is_file():
+            raise ConfigError(f"YT_COOKIES_FILE does not exist or is not a file: {cookies_file}")
+
         return cls(
             workspace_dir=workspace,
             transport=transport,
             host=os.environ.get("MCP_HOST", "0.0.0.0"),
             port=port,
             http_path=http_path,
+            ytdlp_cookies_file=cookies_file,
+            ytdlp_proxy=_optional_string("YT_PROXY"),
+            cache_ttl_hours=_optional_float_env("MCP_CACHE_TTL_HOURS", default=24.0),
+            max_concurrent_jobs=_int_env("MCP_MAX_CONCURRENT_JOBS", default=2, minimum=1),
+            job_ttl_hours=_optional_float_env("MCP_JOB_TTL_HOURS", default=168.0),
         )
 
     @property
@@ -86,3 +100,45 @@ class Config:
 
     def ensure_directories(self) -> None:
         self.v4_storage_dir.mkdir(parents=True, exist_ok=True)
+        (self.workspace_dir / "mcp-jobs").mkdir(parents=True, exist_ok=True)
+
+
+def _optional_string(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _optional_path(name: str) -> Path | None:
+    value = _optional_string(name)
+    if value is None:
+        return None
+    return Path(value).expanduser().resolve()
+
+
+def _optional_float_env(name: str, *, default: float | None) -> float | None:
+    value = _optional_string(name)
+    if value is None:
+        return default
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be a number, got {value!r}") from exc
+    if parsed <= 0:
+        return None
+    return parsed
+
+
+def _int_env(name: str, *, default: int, minimum: int) -> int:
+    value = _optional_string(name)
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be an integer, got {value!r}") from exc
+    if parsed < minimum:
+        raise ConfigError(f"{name} must be >= {minimum}, got {parsed}")
+    return parsed

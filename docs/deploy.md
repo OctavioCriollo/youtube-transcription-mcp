@@ -73,10 +73,18 @@ openclaw mcp set transcripcion '{
   ],
   "env": {
     "GROQ_API_KEY": "gsk_...",
-    "ELEVENLABS_API_KEY": "..."
+    "ELEVENLABS_API_KEY": "...",
+    "YT_COOKIES_FILE": "/run/secrets/youtube-cookies.txt",
+    "YT_PROXY": "http://proxy-host:8080",
+    "MCP_CACHE_TTL_HOURS": "24",
+    "MCP_MAX_CONCURRENT_JOBS": "2",
+    "MCP_JOB_TTL_HOURS": "168"
   }
 }'
 ```
+
+`YT_COOKIES_FILE` and `YT_PROXY` are optional. Leave them out unless the host
+needs help with the cheaper Groq + yt-dlp path.
 
 For a private repo, the host must be able to clone it. Options:
 
@@ -132,8 +140,12 @@ path failed (video had no captions) AND Groq isn't configured.
 
 ### `yt-dlp failed: HTTP Error 403` (audio fallback)
 
-YouTube blocked the cloud IP. For videos without captions, switch to
-Model C (Tailscale to home PC). See README "Known limit" section.
+YouTube blocked the host IP. Options, in order:
+
+- configure `YT_COOKIES_FILE` if you have a valid cookies.txt for the host;
+- configure `YT_PROXY` if you operate a trusted proxy;
+- let the fallback chain use ElevenLabs `source_url`, which does not depend on
+  the MCP host IP.
 
 ### Server seems to start but tool is invisible to the agent
 

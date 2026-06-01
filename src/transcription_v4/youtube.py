@@ -24,6 +24,15 @@ class YoutubeDownloadResult:
 
 
 class YtDlpYoutubeDownloader:
+    def __init__(
+        self,
+        *,
+        cookies_file: Path | None = None,
+        proxy: str | None = None,
+    ) -> None:
+        self.cookies_file = Path(cookies_file).expanduser().resolve() if cookies_file else None
+        self.proxy = proxy.strip() if proxy else None
+
     def download_audio(
         self,
         url: str,
@@ -51,6 +60,12 @@ class YtDlpYoutubeDownloader:
             "no_warnings": True,
             "progress_hooks": [_progress_hook(progress_callback)],
         }
+        if self.cookies_file is not None:
+            if not self.cookies_file.is_file():
+                raise YoutubeDownloadError(f"yt-dlp cookies file does not exist: {self.cookies_file}")
+            options["cookiefile"] = str(self.cookies_file)
+        if self.proxy:
+            options["proxy"] = self.proxy
         try:
             with yt_dlp.YoutubeDL(options) as ydl:
                 info = ydl.extract_info(url, download=True)

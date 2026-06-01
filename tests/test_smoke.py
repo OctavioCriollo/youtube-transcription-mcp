@@ -72,6 +72,37 @@ def test_server_boots(monkeypatch, tmp_path):
     server = create_server()
     assert server is not None
     assert (tmp_path / "v4-storage").is_dir()
+    assert (tmp_path / "mcp-jobs").is_dir()
+
+
+def test_config_reads_optional_runtime_controls(monkeypatch, tmp_path):
+    from transcription_mcp.config import Config
+
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("# cookies", encoding="utf-8")
+    monkeypatch.setenv("WORKSPACE_DIR", str(tmp_path))
+    monkeypatch.setenv("YT_COOKIES_FILE", str(cookies))
+    monkeypatch.setenv("YT_PROXY", "http://proxy.local:8080")
+    monkeypatch.setenv("MCP_CACHE_TTL_HOURS", "12")
+    monkeypatch.setenv("MCP_MAX_CONCURRENT_JOBS", "3")
+    monkeypatch.setenv("MCP_JOB_TTL_HOURS", "48")
+
+    cfg = Config.from_env()
+
+    assert cfg.ytdlp_cookies_file == cookies.resolve()
+    assert cfg.ytdlp_proxy == "http://proxy.local:8080"
+    assert cfg.cache_ttl_hours == 12
+    assert cfg.max_concurrent_jobs == 3
+    assert cfg.job_ttl_hours == 48
+
+
+def test_config_rejects_missing_cookies_file(monkeypatch, tmp_path):
+    from transcription_mcp.config import Config, ConfigError
+
+    monkeypatch.setenv("WORKSPACE_DIR", str(tmp_path))
+    monkeypatch.setenv("YT_COOKIES_FILE", str(tmp_path / "missing-cookies.txt"))
+    with pytest.raises(ConfigError, match="YT_COOKIES_FILE"):
+        Config.from_env()
 
 
 def test_extract_video_id_variants():

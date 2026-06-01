@@ -55,7 +55,10 @@ hand back low-quality captions as if they were premium audio transcription.
   `get_transcription_status`, `get_transcription_result`, and `cancel_transcription`
   provide visibility and control for long videos.
 - **Cloud-proof.** The ElevenLabs `source_url` level bypasses YouTube IP blocking entirely.
-  No residential proxy, no Tailscale, no cookie juggling required.
+  Optional `YT_COOKIES_FILE` / `YT_PROXY` can improve the cheaper Groq + yt-dlp path.
+- **Reusable artifacts.** Completed runs expose transcript, timestamps, SRT, VTT,
+  canonical JSON, audit files, and speaker reports when available.
+- **Smart reuse.** Completed runs can be reused from the workspace cache with a TTL.
 - **Cost-aware.** Tries the cheapest provider first; only escalates when needed.
 - **Auto language detection.** Detects the spoken language; never translates unless asked.
 - **Transparent results.** Every response reports `method`, `provider`,
@@ -161,24 +164,37 @@ or, on a cloud host where YouTube blocks the download:
 
 ### Tool reference
 
-Synchronous tool:
+Synchronous tools:
 
-| Parameter  | Type            | Required | Description                                                                 |
-| ---------- | --------------- | -------- | --------------------------------------------------------------------------- |
-| `url`      | string          | ✅       | YouTube URL — `watch?v=`, `youtu.be/`, or `shorts/` forms.                   |
-| `language` | string \| null  | ❌       | ISO 639-1 code (`es`, `en`, `pt`…). Omit for auto-detect. Never translates.  |
+| Tool                   | Purpose                                                       |
+| ---------------------- | ------------------------------------------------------------- |
+| `transcribe_youtube`   | Blocking YouTube transcription with Groq -> ElevenLabs -> CC. |
+| `transcribe_media_url` | Blocking public media URL transcription via audio providers.  |
+| `transcribe_file`      | Blocking local file transcription on the MCP host.            |
 
 Asynchronous production flow:
 
-| Tool                          | Purpose                                                                |
-| ----------------------------- | ---------------------------------------------------------------------- |
-| `start_youtube_transcription` | Starts a background job and returns `run_id` immediately.              |
-| `get_transcription_status`    | Polls persistent status, stage, progress, logs, and v4 chunk progress. |
-| `get_transcription_result`    | Returns the final transcript once `status == "completed"`.             |
-| `cancel_transcription`        | Best-effort cancellation of the worker process and its children.        |
+| Tool                            | Purpose                                                                |
+| ------------------------------- | ---------------------------------------------------------------------- |
+| `start_youtube_transcription`   | Starts a background job and returns `run_id` immediately.              |
+| `start_media_url_transcription` | Starts a background job for a public media URL.                        |
+| `start_file_transcription`      | Starts a background job for a local file visible to the MCP host.      |
+| `get_transcription_status`      | Polls persistent status, stage, progress, logs, and v4 chunk progress. |
+| `get_transcription_result`      | Returns the final transcript once `status == "completed"`.             |
+| `get_transcription_artifact`    | Returns a named text artifact such as `subtitles_srt` or `audit_txt`.  |
+| `cancel_transcription`          | Best-effort cancellation of the worker process and its children.        |
 
 Use the async flow for long videos, production agents, or any client where a
 silent long-running MCP call would look blocked.
+
+Common optional parameters:
+
+| Parameter        | Type           | Description                                                        |
+| ---------------- | -------------- | ------------------------------------------------------------------ |
+| `language`       | string \| null | ISO 639-1 code (`es`, `en`, `pt`...). Omit for auto-detect.        |
+| `provider_order` | string \| null | Comma-separated providers, e.g. `groq,elevenlabs` or `local,groq`. |
+| `diarize`        | bool           | Speaker diarization. Currently supported by ElevenLabs only.       |
+| `num_speakers`   | int \| null    | Optional expected speaker count for diarization.                   |
 
 ### Response shape
 
@@ -190,8 +206,15 @@ silent long-running MCP call would look blocked.
   "model": "whisper-large-v3-turbo",
   "provider": "groq",
   "method": "groq",                       // groq | elevenlabs | subtitles
+  "cache": { "hit": false },
   "estimated_cost_usd": 0.0002,
+  "source": { "type": "youtube", "url": "https://www.youtube.com/watch?v=jNQXAC9IVRw", "path": null },
   "youtube": { "video_id": "jNQXAC9IVRw", "title": "Me at the zoo", "channel": "jawed" },
+  "artifacts": {
+    "transcript_txt": { "path": ".../transcript.txt", "exists": true, "size_bytes": 1234 },
+    "subtitles_srt": { "path": ".../subtitles.srt", "exists": true, "size_bytes": 2345 },
+    "subtitles_vtt": { "path": ".../subtitles.vtt", "exists": true, "size_bytes": 2345 }
+  },
   "quality_status": "pass",
   "audit": { "status": "pass", "verdict": "artifacts passed structural and quality checks" },
   "failed_attempts": {                     // present only if an earlier level failed
@@ -216,8 +239,17 @@ a missing key simply skips that level.
 | `MCP_HOST`           | `0.0.0.0`                        | HTTP mode only.                                             |
 | `MCP_PORT`           | `8000`                           | HTTP mode only.                                             |
 | `MCP_HTTP_PATH`      | `/mcp`                           | HTTP mode only.                                             |
+| `YT_COOKIES_FILE`    | —                                | Optional cookies.txt path for the Groq/yt-dlp download path. |
+| `YT_PROXY`           | —                                | Optional yt-dlp proxy for the Groq/local download path.     |
+| `MCP_CACHE_TTL_HOURS`| `24`                             | Completed-run reuse window. Set `0` to disable cache hits.  |
+| `MCP_MAX_CONCURRENT_JOBS` | `2`                        | Maximum active async worker jobs.                           |
+| `MCP_JOB_TTL_HOURS`  | `168`                            | Cleanup window for completed/failed/canceled MCP job records. |
 
 > With **no** API keys set, only the free YouTube-captions level is available.
+
+`YT_COOKIES_FILE` and `YT_PROXY` are optional. If neither is set, behavior is
+unchanged. If `YT_COOKIES_FILE` is set but the file does not exist, startup fails
+fast because that is a host misconfiguration.
 
 ---
 
@@ -313,10 +345,10 @@ curl -s -X POST http://localhost:8000/mcp \
 ## 🗺️ Roadmap
 
 - [x] Async job model with status polling (for videos > 30 min).
-- [ ] File-upload ingestion (transcribe attachments forwarded from chat, not just YouTube).
-- [ ] Optional SRT / VTT output for the agent.
-- [ ] Diarization passthrough (speaker labels) on the ElevenLabs path.
-- [ ] Background TTL cleanup of the workspace cache.
+- [x] File/media ingestion for local files and public media URLs.
+- [x] Optional SRT / VTT output for the agent via artifact manifest/content.
+- [x] Diarization passthrough (speaker labels) on the ElevenLabs path.
+- [x] Background TTL cleanup for MCP job records.
 
 ---
 

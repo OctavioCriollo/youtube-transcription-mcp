@@ -16,7 +16,11 @@ from transcription_mcp.jobs import (
     update_job_status,
     write_json_atomic,
 )
-from transcription_mcp.pipeline import transcribe_youtube_sync
+from transcription_mcp.pipeline import (
+    transcribe_file_sync,
+    transcribe_media_url_sync,
+    transcribe_youtube_sync,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -27,7 +31,8 @@ def main(argv: list[str] | None = None) -> int:
 
     job_dir = Path(argv[0]).resolve()
     request = read_json(job_dir / "request.json")
-    url = str(request["url"])
+    source = str(request["source"])
+    source_type = str(request.get("source_type") or "youtube")
     language = request.get("language")
     workspace_dir = Path(str(request["workspace_dir"]))
 
@@ -37,7 +42,8 @@ def main(argv: list[str] | None = None) -> int:
         kwargs={
             "job_dir": job_dir,
             "workspace_dir": workspace_dir,
-            "url": url,
+            "source": source,
+            "source_type": source_type,
             "stop_event": stop_monitor,
         },
         daemon=True,
@@ -52,8 +58,10 @@ def main(argv: list[str] | None = None) -> int:
             message="Transcription worker started.",
             progress=0.05,
         )
-        result = transcribe_youtube_sync(
-            url=url,
+        result = _run_request(
+            request=request,
+            source=source,
+            source_type=source_type,
             language=language,
             workspace_dir=workspace_dir,
             status_callback=lambda event: _on_pipeline_status(job_dir, event),
@@ -91,6 +99,42 @@ def main(argv: list[str] | None = None) -> int:
         monitor.join(timeout=2)
 
 
+def _run_request(
+    *,
+    request: dict[str, Any],
+    source: str,
+    source_type: str,
+    language: str | None,
+    workspace_dir: Path,
+    status_callback,
+) -> dict[str, Any]:
+    common = {
+        "language": language,
+        "workspace_dir": workspace_dir,
+        "provider_order": request.get("provider_order"),
+        "diarize": bool(request.get("diarize", False)),
+        "num_speakers": request.get("num_speakers"),
+        "cache_ttl_hours": request.get("cache_ttl_hours"),
+        "status_callback": status_callback,
+    }
+    if source_type == "file":
+        return transcribe_file_sync(file_path=Path(source), **common)
+
+    url_common = {
+        **common,
+        "url": source,
+        "ytdlp_cookies_file": (
+            Path(str(request["ytdlp_cookies_file"]))
+            if request.get("ytdlp_cookies_file")
+            else None
+        ),
+        "ytdlp_proxy": request.get("ytdlp_proxy"),
+    }
+    if source_type == "media_url":
+        return transcribe_media_url_sync(**url_common)
+    return transcribe_youtube_sync(**url_common)
+
+
 def _on_pipeline_status(job_dir: Path, event: dict[str, Any]) -> None:
     stage = str(event.get("stage") or "running")
     payload: dict[str, Any] = {
@@ -112,14 +156,19 @@ def _monitor_v4_status(
     *,
     job_dir: Path,
     workspace_dir: Path,
-    url: str,
+    source: str,
+    source_type: str,
     stop_event: threading.Event,
 ) -> None:
     while not stop_event.wait(2.0):
         job = read_json(job_dir / "job.json")
         if job.get("status") in {"completed", "failed", "canceled"}:
             return
-        report = latest_v4_status(workspace_dir=workspace_dir, url=url)
+        report = latest_v4_status(
+            workspace_dir=workspace_dir,
+            source=source,
+            source_type=source_type,
+        )
         if not report:
             continue
         summary = summarize_v4_status(report)

@@ -68,6 +68,53 @@ def test_get_transcription_job_result_returns_completed_payload(tmp_path):
     assert result["result"]["transcript"] == "hola"
 
 
+def test_get_transcription_job_artifact_returns_named_content(tmp_path):
+    from transcription_mcp import jobs
+
+    run_dir = tmp_path / "v4-storage" / "items" / "url-test" / "runs" / "run_1"
+    run_dir.mkdir(parents=True)
+    artifact_path = run_dir / "subtitles.srt"
+    artifact_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nhola", encoding="utf-8")
+    job_dir = tmp_path / "mcp-jobs" / "mcpjob_artifact"
+    job_dir.mkdir(parents=True)
+    jobs.write_json_atomic(
+        job_dir / "job.json",
+        {
+            "schema_version": jobs.JOB_SCHEMA_VERSION,
+            "run_id": "mcpjob_artifact",
+            "url": "https://youtu.be/example",
+            "status": "completed",
+            "stage": "completed",
+            "message": "done",
+            "result_available": True,
+        },
+    )
+    jobs.write_json_atomic(
+        job_dir / "result.json",
+        {
+            "transcript": "hola",
+            "run_dir": str(run_dir),
+            "artifacts": {
+                "subtitles_srt": {
+                    "path": str(artifact_path),
+                    "exists": True,
+                    "size_bytes": artifact_path.stat().st_size,
+                }
+            },
+        },
+    )
+
+    result = jobs.get_transcription_job_artifact(
+        run_id="mcpjob_artifact",
+        artifact="subtitles_srt",
+        workspace_dir=tmp_path,
+    )
+
+    assert result["status"] == "completed"
+    assert result["artifact"] == "subtitles_srt"
+    assert "hola" in result["content"]
+
+
 def test_cancel_transcription_job_marks_job_canceled(monkeypatch, tmp_path):
     from transcription_mcp import jobs
 

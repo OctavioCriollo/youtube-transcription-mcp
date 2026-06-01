@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import uuid
@@ -16,6 +17,7 @@ from transcription_v4.storage import item_id_for_url
 
 JOB_SCHEMA_VERSION = "mcp-transcription-job-v1"
 TERMINAL_STATUSES = {"completed", "failed", "canceled"}
+SOURCE_TYPES = {"youtube", "media_url", "file"}
 SAFE_RUN_ID_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.")
 
 
@@ -25,13 +27,36 @@ class JobNotFoundError(FileNotFoundError):
 
 def start_transcription_job(
     *,
-    url: str,
+    source: str | None = None,
+    source_type: str = "youtube",
+    url: str | None = None,
     language: str | None,
     workspace_dir: Path,
+    provider_order: str | None = None,
+    diarize: bool = False,
+    num_speakers: int | None = None,
+    ytdlp_cookies_file: Path | None = None,
+    ytdlp_proxy: str | None = None,
+    cache_ttl_hours: float | None = 24.0,
+    max_concurrent_jobs: int = 2,
+    job_ttl_hours: float | None = 168.0,
 ) -> dict[str, Any]:
-    url = str(url).strip()
-    if not url:
-        raise ValueError("url must not be empty")
+    source = str(source or url or "").strip()
+    if not source:
+        raise ValueError("source must not be empty")
+    source_type = source_type.strip().lower()
+    if source_type not in SOURCE_TYPES:
+        raise ValueError(f"source_type must be one of: {', '.join(sorted(SOURCE_TYPES))}")
+    if source_type == "file" and not Path(source).expanduser().is_file():
+        raise FileNotFoundError(Path(source).expanduser())
+
+    cleanup_expired_jobs(workspace_dir=workspace_dir, ttl_hours=job_ttl_hours)
+    active_jobs = count_active_jobs(workspace_dir=workspace_dir)
+    if active_jobs >= max_concurrent_jobs:
+        raise RuntimeError(
+            f"maximum concurrent transcription jobs reached "
+            f"({active_jobs}/{max_concurrent_jobs})"
+        )
 
     job_dir = _new_job_dir(workspace_dir)
     run_id = job_dir.name
@@ -43,15 +68,28 @@ def start_transcription_job(
     request = {
         "schema_version": JOB_SCHEMA_VERSION,
         "run_id": run_id,
-        "url": url,
+        "source": source,
+        "source_type": source_type,
+        "url": source if source_type in {"youtube", "media_url"} else None,
         "language": language,
         "workspace_dir": str(Path(workspace_dir)),
+        "provider_order": provider_order,
+        "diarize": diarize,
+        "num_speakers": num_speakers,
+        "ytdlp_cookies_file": str(ytdlp_cookies_file) if ytdlp_cookies_file else None,
+        "ytdlp_proxy": ytdlp_proxy,
+        "cache_ttl_hours": cache_ttl_hours,
     }
     job = {
         "schema_version": JOB_SCHEMA_VERSION,
         "run_id": run_id,
-        "url": url,
+        "source": source,
+        "source_type": source_type,
+        "url": source if source_type in {"youtube", "media_url"} else None,
         "language": language,
+        "provider_order": provider_order,
+        "diarize": diarize,
+        "num_speakers": num_speakers,
         "status": "queued",
         "stage": "queued",
         "message": "Transcription job queued.",
@@ -140,6 +178,44 @@ def get_transcription_job_result(
     }
 
 
+def get_transcription_job_artifact(
+    *,
+    run_id: str,
+    artifact: str,
+    workspace_dir: Path,
+    max_chars: int = 200_000,
+) -> dict[str, Any]:
+    result_response = get_transcription_job_result(run_id=run_id, workspace_dir=workspace_dir)
+    if result_response.get("status") != "completed":
+        return result_response
+
+    result = result_response["result"]
+    artifacts = result.get("artifacts", {}) or {}
+    if artifact not in artifacts:
+        return {
+            "run_id": run_id,
+            "status": "not_found",
+            "artifact": artifact,
+            "available_artifacts": sorted(artifacts),
+        }
+
+    run_dir = Path(str(result["run_dir"])).resolve()
+    artifact_path = Path(str(artifacts[artifact]["path"])).resolve()
+    if not _is_relative_to(artifact_path, run_dir):
+        raise ValueError("artifact path escapes run_dir")
+    content = artifact_path.read_text(encoding="utf-8", errors="replace")
+    truncated = len(content) > max_chars
+    return {
+        "run_id": run_id,
+        "status": "completed",
+        "artifact": artifact,
+        "path": str(artifact_path),
+        "size_bytes": artifact_path.stat().st_size,
+        "truncated": truncated,
+        "content": content[:max_chars],
+    }
+
+
 def cancel_transcription_job(
     *,
     run_id: str,
@@ -170,6 +246,48 @@ def cancel_transcription_job(
     return get_transcription_job_status(run_id=run_id, workspace_dir=workspace_dir)
 
 
+def cleanup_expired_jobs(*, workspace_dir: Path, ttl_hours: float | None) -> int:
+    if ttl_hours is None:
+        return 0
+    jobs_root = Path(workspace_dir) / "mcp-jobs"
+    if not jobs_root.is_dir():
+        return 0
+    cutoff = datetime.now(UTC).timestamp() - (ttl_hours * 3600)
+    removed = 0
+    for job_dir in jobs_root.iterdir():
+        if not job_dir.is_dir():
+            continue
+        job = _read_json_optional(job_dir / "job.json")
+        if job.get("status") not in TERMINAL_STATUSES:
+            continue
+        marker = job.get("finished_at") or job.get("updated_at")
+        marker_ts = _parse_iso_timestamp(marker) if marker else None
+        if marker_ts is None:
+            marker_ts = (job_dir / "job.json").stat().st_mtime if (job_dir / "job.json").exists() else job_dir.stat().st_mtime
+        if marker_ts >= cutoff:
+            continue
+        shutil.rmtree(job_dir, ignore_errors=True)
+        removed += 1
+    return removed
+
+
+def count_active_jobs(*, workspace_dir: Path) -> int:
+    jobs_root = Path(workspace_dir) / "mcp-jobs"
+    if not jobs_root.is_dir():
+        return 0
+    count = 0
+    for job_dir in jobs_root.iterdir():
+        if not job_dir.is_dir():
+            continue
+        job = _read_json_optional(job_dir / "job.json")
+        if not job or job.get("status") in TERMINAL_STATUSES:
+            continue
+        pid = _int_or_none(job.get("worker_pid"))
+        if pid is None or _is_pid_alive(pid):
+            count += 1
+    return count
+
+
 def get_job_dir(*, workspace_dir: Path, run_id: str) -> Path:
     _validate_run_id(run_id)
     job_dir = Path(workspace_dir) / "mcp-jobs" / run_id
@@ -187,8 +305,19 @@ def update_job_status(job_dir: Path, **updates: Any) -> dict[str, Any]:
     return job
 
 
-def latest_v4_status(*, workspace_dir: Path, url: str) -> dict[str, Any] | None:
-    runs_dir = Path(workspace_dir) / "v4-storage" / "items" / item_id_for_url(url) / "runs"
+def latest_v4_status(
+    *,
+    workspace_dir: Path,
+    source: str,
+    source_type: str = "youtube",
+) -> dict[str, Any] | None:
+    if source_type == "file":
+        # Avoid hashing large files every status poll. The final result still
+        # contains the v4 run_dir and artifact manifest once the worker ends.
+        return None
+    else:
+        item_id = item_id_for_url(source)
+    runs_dir = Path(workspace_dir) / "v4-storage" / "items" / item_id / "runs"
     if not runs_dir.is_dir():
         return None
     candidates = sorted(
@@ -198,7 +327,9 @@ def latest_v4_status(*, workspace_dir: Path, url: str) -> dict[str, Any] | None:
     )
     for run_dir in candidates:
         state = _read_json_optional(run_dir / "run-state.json")
-        if state.get("source_url") and state["source_url"] != url:
+        if source_type != "file" and state.get("source_url") and state["source_url"] != source:
+            continue
+        if source_type == "file" and state.get("source_path") and state["source_path"] != str(Path(source).expanduser().resolve()):
             continue
         try:
             return inspect_run(run_dir)
@@ -268,12 +399,13 @@ def _refresh_job_status(job_dir: Path, job: dict[str, Any]) -> dict[str, Any]:
     if job.get("status") in TERMINAL_STATUSES:
         return job
 
-    v4_status = latest_v4_status(
+    report = latest_v4_status(
         workspace_dir=Path(str(job.get("workspace_dir") or job_dir.parents[1])),
-        url=str(job.get("url") or ""),
+        source=str(job.get("source") or job.get("url") or ""),
+        source_type=str(job.get("source_type") or "youtube"),
     )
-    if v4_status:
-        summary = summarize_v4_status(v4_status)
+    if report:
+        summary = summarize_v4_status(report)
         update_payload = {
             "stage": summary["stage"],
             "message": summary["message"],
@@ -322,8 +454,13 @@ def _public_job(job_dir: Path, job: dict[str, Any]) -> dict[str, Any]:
     public_keys = {
         "schema_version",
         "run_id",
+        "source",
+        "source_type",
         "url",
         "language",
+        "provider_order",
+        "diarize",
+        "num_speakers",
         "status",
         "stage",
         "message",
@@ -353,6 +490,8 @@ def _read_job(job_dir: Path) -> dict[str, Any]:
         raise JobNotFoundError(str(job_dir))
     job = read_json(job_path)
     job.setdefault("workspace_dir", str(Path(job_dir).parents[1]))
+    job.setdefault("source", job.get("url"))
+    job.setdefault("source_type", "youtube")
     return job
 
 
@@ -421,6 +560,23 @@ def _int_or_none(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _parse_iso_timestamp(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _is_relative_to(path: Path, base: Path) -> bool:
+    try:
+        path.relative_to(base)
+    except ValueError:
+        return False
+    return True
 
 
 def _now_iso() -> str:

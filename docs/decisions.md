@@ -207,6 +207,30 @@ client support varies, while persisted state is visible to any MCP client and
 survives a silent or long-running worker. `notifications/progress` can still be
 added later as a convenience layer, but persisted polling is the contract.
 
+## Production hardening roadmap implementation
+
+The MCP layer exposes production features without changing the default path:
+
+- Completed v4 runs are treated as the cache. The MCP searches completed runs
+  in `v4-storage`, validates provider/order/language/diarization criteria, and
+  returns a cache hit only while `MCP_CACHE_TTL_HOURS` is fresh.
+- Result payloads expose an artifact manifest instead of embedding every large
+  artifact. `get_transcription_artifact` fetches a named text artifact on
+  demand.
+- Cookies and proxy are host configuration only (`YT_COOKIES_FILE`, `YT_PROXY`).
+  They are not MCP tool arguments, so a chat user cannot inject host paths or
+  arbitrary proxies.
+- Diarization is a normal tool option but is routed only to ElevenLabs. Groq and
+  local providers are skipped for diarized requests instead of failing the whole
+  chain.
+- `local` is supported only through explicit `provider_order`; it is not part of
+  the default chain because CPU/GPU runtime is an operational choice.
+- Public media URLs and local files use separate tools from YouTube. This keeps
+  YouTube captions fallback scoped to YouTube and avoids ambiguous source
+  semantics.
+- Async workers enforce a simple host-level concurrency limit and clean old job
+  records. v4 transcript artifacts are not deleted by that job cleanup.
+
 ## Anti-patterns to watch for in future iterations
 
 Three failure modes to recognise if they reappear:
