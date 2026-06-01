@@ -7,11 +7,13 @@ is here "for the future".
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 
 VALID_TRANSPORTS = {"stdio", "streamable-http"}
+APP_DIR_NAME = "transcription-mcp"
 
 
 class ConfigError(RuntimeError):
@@ -19,14 +21,36 @@ class ConfigError(RuntimeError):
 
 
 def _default_workspace_dir() -> Path:
-    """Choose a writable workspace dir that works for `uvx`-launched runs.
+    """Return an OS-standard per-user workspace directory.
 
-    Inside a Docker container we want /workspace (mounted as a volume).
-    For uvx-launched (running under the OpenClaw user) we use ~/.transcription-mcp.
+    `WORKSPACE_DIR` is the explicit override for Docker, servers, and operators
+    that want a mounted volume. The implicit default intentionally avoids probing
+    absolute paths such as `/workspace`, which resolves to a drive-root path on
+    Windows.
     """
-    if Path("/workspace").exists() and os.access("/workspace", os.W_OK):
-        return Path("/workspace")
-    return Path.home() / ".transcription-mcp" / "workspace"
+    return _default_app_data_dir() / "workspace"
+
+
+def _default_app_data_dir() -> Path:
+    if sys.platform == "win32":
+        base = _path_from_env("LOCALAPPDATA") or _path_from_env("APPDATA") or Path.home()
+        return base / APP_DIR_NAME
+
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / APP_DIR_NAME
+
+    base = _path_from_env("XDG_STATE_HOME") or (Path.home() / ".local" / "state")
+    return base / APP_DIR_NAME
+
+
+def _path_from_env(name: str) -> Path | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    return Path(stripped).expanduser()
 
 
 @dataclass(frozen=True)

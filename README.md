@@ -263,7 +263,7 @@ a missing key simply skips that level.
 | `GROQ_API_KEY`       | —                                | **Level 1.** Groq Whisper. Free tier at console.groq.com.   |
 | `ELEVENLABS_API_KEY` | —                                | **Level 2.** ElevenLabs Scribe v2 (cloud-safe fallback).    |
 | `MCP_TRANSPORT`      | `stdio`                          | `stdio` for `uvx`-launched, or `streamable-http` for remote. |
-| `WORKSPACE_DIR`      | `~/.transcription-mcp/workspace` | Cache for downloads + transcript artifacts.                 |
+| `WORKSPACE_DIR`      | OS user data dir                 | Cache for downloads + transcript artifacts.                 |
 | `MCP_HOST`           | `0.0.0.0`                        | HTTP mode only.                                             |
 | `MCP_PORT`           | `8000`                           | HTTP mode only.                                             |
 | `MCP_HTTP_PATH`      | `/mcp`                           | HTTP mode only.                                             |
@@ -274,6 +274,18 @@ a missing key simply skips that level.
 | `MCP_JOB_TTL_HOURS`  | `168`                            | Cleanup window for completed/failed/canceled MCP job records. |
 
 > With **no** API keys set, only the free YouTube-captions level is available.
+
+`WORKSPACE_DIR` is optional but recommended for Docker or hosted deployments.
+When it is omitted, the MCP uses an OS-standard per-user data directory:
+
+- Windows: `%LOCALAPPDATA%\transcription-mcp\workspace`
+- macOS: `~/Library/Application Support/transcription-mcp/workspace`
+- Linux: `$XDG_STATE_HOME/transcription-mcp/workspace`, or
+  `~/.local/state/transcription-mcp/workspace` when `XDG_STATE_HOME` is unset
+
+Docker images in this repo set `WORKSPACE_DIR=/workspace` explicitly. The MCP no
+longer probes `/workspace` implicitly, because on Windows that can resolve to a
+drive-root directory outside the user's normal application data area.
 
 `YT_COOKIES_FILE` and `YT_PROXY` are optional. If neither is set, behavior is
 unchanged. If `YT_COOKIES_FILE` is set but the file does not exist, startup fails

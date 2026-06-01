@@ -22,6 +22,31 @@ def test_config_boots_without_groq_key(monkeypatch, tmp_path):
     assert cfg.workspace_dir == tmp_path.resolve()
 
 
+def test_default_workspace_uses_windows_local_app_data(monkeypatch, tmp_path):
+    from transcription_mcp import config
+
+    local_app_data = tmp_path / "local-app-data"
+    monkeypatch.delenv("WORKSPACE_DIR", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    monkeypatch.delenv("APPDATA", raising=False)
+    monkeypatch.setattr(config.sys, "platform", "win32")
+
+    assert config._default_workspace_dir() == (
+        local_app_data / "transcription-mcp" / "workspace"
+    )
+
+
+def test_default_workspace_uses_xdg_state_home(monkeypatch, tmp_path):
+    from transcription_mcp import config
+
+    state_home = tmp_path / "state-home"
+    monkeypatch.delenv("WORKSPACE_DIR", raising=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
+    monkeypatch.setattr(config.sys, "platform", "linux")
+
+    assert config._default_workspace_dir() == state_home / "transcription-mcp" / "workspace"
+
+
 def test_config_defaults_to_stdio(monkeypatch, tmp_path):
     from transcription_mcp.config import Config
 

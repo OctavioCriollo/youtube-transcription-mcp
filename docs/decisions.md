@@ -233,6 +233,27 @@ progress in every MCP client. It is advisory metadata: clients that ignore
 custom fields or prompts may still behave silently. The robust production path
 remains start/status/result polling backed by persisted job files.
 
+## Workspace directory defaults
+
+The MCP stores mutable runtime data separately from the package cache used by
+`uvx`. Package installation belongs to `uv`; transcription jobs, downloads,
+artifacts, and cache entries belong to the MCP workspace.
+
+`WORKSPACE_DIR` is the explicit operator override and is the right choice for
+Docker volumes, remote servers, and deployments that need predictable storage.
+When it is omitted, the MCP uses per-user operating-system defaults:
+
+- Windows: `%LOCALAPPDATA%\transcription-mcp\workspace`, falling back to
+  `%APPDATA%` and then the user home only if needed.
+- macOS: `~/Library/Application Support/transcription-mcp/workspace`.
+- Linux: `$XDG_STATE_HOME/transcription-mcp/workspace`, falling back to
+  `~/.local/state/transcription-mcp/workspace`.
+
+Do not implicitly probe `/workspace` in application code. In Docker that path is
+fine, but the Dockerfile already sets `WORKSPACE_DIR=/workspace`. On Windows,
+`Path("/workspace")` resolves to a drive-root path, which is surprising and can
+create data outside the user's normal application area.
+
 ## Production hardening roadmap implementation
 
 The MCP layer exposes production features without changing the default path:
