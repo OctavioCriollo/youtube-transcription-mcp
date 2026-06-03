@@ -57,6 +57,8 @@ def main(argv: list[str] | None = None) -> int:
             stage="started",
             message="Transcription worker started.",
             progress=0.05,
+            started_at=_now_marker(),
+            heartbeat_at=_now_marker(),
         )
         result = _run_request(
             request=request,
@@ -162,25 +164,29 @@ def _monitor_v4_status(
 ) -> None:
     while not stop_event.wait(2.0):
         job = read_json(job_dir / "job.json")
-        if job.get("status") in {"completed", "failed", "canceled"}:
+        if job.get("status") in {"completed", "failed", "canceled", "stale_failed"}:
             return
+        # Heartbeat: the worker is alive and processing. Status readers use this
+        # to distinguish a live long job from a hung/dead one.
         report = latest_v4_status(
             workspace_dir=workspace_dir,
             source=source,
             source_type=source_type,
         )
-        if not report:
-            continue
-        summary = summarize_v4_status(report)
-        update_payload = {
-            "status": "running",
-            "stage": summary["stage"],
-            "message": summary["message"],
-            "v4_run_dir": summary["v4_run_dir"],
-            "v4_status": summary["v4_status"],
-        }
-        if summary["progress"] is not None:
-            update_payload["progress"] = summary["progress"]
+        update_payload: dict[str, Any] = {"heartbeat_at": _now_marker()}
+        if report:
+            summary = summarize_v4_status(report)
+            update_payload.update(
+                {
+                    "status": "running",
+                    "stage": summary["stage"],
+                    "message": summary["message"],
+                    "v4_run_dir": summary["v4_run_dir"],
+                    "v4_status": summary["v4_status"],
+                }
+            )
+            if summary["progress"] is not None:
+                update_payload["progress"] = summary["progress"]
         update_job_status(job_dir, **update_payload)
 
 

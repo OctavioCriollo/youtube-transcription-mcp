@@ -65,6 +65,12 @@ class Config:
     cache_ttl_hours: float | None
     max_concurrent_jobs: int
     job_ttl_hours: float | None
+    job_stale_seconds: float
+    job_timeout_seconds: float | None
+    # How OpenClaw sees this MCP's workspace volume (read-only mount). Used only
+    # to report bundle_path_for_openclaw to the agent; the MCP itself never
+    # reads/writes that path. Example: /home/node/.openclaw/mcp-workspace/transcription-mcp
+    openclaw_workspace_dir: str | None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -116,6 +122,13 @@ class Config:
             cache_ttl_hours=_optional_float_env("MCP_CACHE_TTL_HOURS", default=24.0),
             max_concurrent_jobs=_int_env("MCP_MAX_CONCURRENT_JOBS", default=2, minimum=1),
             job_ttl_hours=_optional_float_env("MCP_JOB_TTL_HOURS", default=168.0),
+            job_stale_seconds=_optional_float_env(
+                "TRANSCRIPTION_JOB_STALE_SECONDS", default=180.0
+            ) or 0.0,
+            job_timeout_seconds=_optional_float_env(
+                "TRANSCRIPTION_JOB_TIMEOUT_SECONDS", default=3600.0
+            ),
+            openclaw_workspace_dir=_optional_string("OPENCLAW_WORKSPACE_DIR"),
         )
 
     @property

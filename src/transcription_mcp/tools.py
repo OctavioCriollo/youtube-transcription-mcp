@@ -15,6 +15,7 @@ from pydantic import Field
 from transcription_mcp.config import Config
 from transcription_mcp.jobs import (
     cancel_transcription_job,
+    create_transcription_job_bundle,
     get_transcription_job_artifact,
     get_transcription_job_result,
     get_transcription_job_status,
@@ -331,6 +332,32 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             run_id=run_id,
             artifact=artifact,
             workspace_dir=config.workspace_dir,
+        )
+
+    @mcp.tool()
+    def create_transcription_bundle(
+        run_id: Annotated[
+            str,
+            Field(description="run_id of a COMPLETED transcription job."),
+        ],
+    ) -> dict[str, Any]:
+        """Package a completed transcription into a downloadable .zip and return its paths.
+
+        Use this when the user asks for a FILE / download / attachment of the
+        transcription (not just text). The zip bundles transcript, timestamps,
+        SRT/VTT subtitles, audit and canonical JSON when available.
+
+        The response includes `bundle_path_for_openclaw`: send THAT file to the
+        user as an attachment. Do NOT rebuild files by hand and do NOT send a
+        plain .txt as media. If the bundle expired, call this tool again to
+        regenerate it. The source of truth stays in the run_dir; this zip is a
+        temporary, regenerable copy.
+        """
+        return create_transcription_job_bundle(
+            run_id=run_id,
+            workspace_dir=config.workspace_dir,
+            openclaw_workspace_dir=config.openclaw_workspace_dir,
+            ttl_hours=config.cache_ttl_hours,
         )
 
     @mcp.tool()

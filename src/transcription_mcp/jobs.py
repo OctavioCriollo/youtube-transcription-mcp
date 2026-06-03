@@ -16,10 +16,26 @@ from transcription_v4.status import inspect_run
 from transcription_v4.storage import item_id_for_url
 
 JOB_SCHEMA_VERSION = "mcp-transcription-job-v1"
-TERMINAL_STATUSES = {"completed", "failed", "canceled"}
+# stale_failed is terminal: a job that hung (no heartbeat) is moved here so it
+# stops counting against max_concurrent_jobs.
+TERMINAL_STATUSES = {"completed", "failed", "canceled", "stale_failed"}
 SOURCE_TYPES = {"youtube", "media_url", "file"}
 SAFE_RUN_ID_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.")
 DEFAULT_RECOMMENDED_POLL_SECONDS = 20
+
+
+def _stale_seconds_from_env() -> float:
+    raw = os.environ.get("TRANSCRIPTION_JOB_STALE_SECONDS", "180").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return 180.0
+    return value if value > 0 else 0.0
+
+
+# Seconds without a heartbeat before a running job is considered hung.
+# 0 disables stale detection.
+JOB_STALE_SECONDS = _stale_seconds_from_env()
 
 
 class JobNotFoundError(FileNotFoundError):
@@ -188,6 +204,50 @@ def get_transcription_job_result(
     )
 
 
+def create_transcription_job_bundle(
+    *,
+    run_id: str,
+    workspace_dir: Path,
+    openclaw_workspace_dir: str | None = None,
+    ttl_hours: float | None = 24.0,
+) -> dict[str, Any]:
+    """Create a delivery .zip for a completed job and return its metadata.
+
+    Resolves the official run_dir from the job's result.json (source of truth),
+    then packages the run's artifacts. The agent should send
+    bundle_path_for_openclaw to the user — never reconstruct files by hand.
+    """
+    from transcription_mcp.bundle import BundleError, create_bundle
+
+    result_response = get_transcription_job_result(run_id=run_id, workspace_dir=workspace_dir)
+    if result_response.get("status") != "completed":
+        # Not ready (queued/running/failed/...). Pass the status response through
+        # so the agent follows recommended_next_tool.
+        return result_response
+
+    result = result_response["result"]
+    run_dir = result.get("run_dir")
+    if not run_dir:
+        return {
+            "run_id": run_id,
+            "status": "error",
+            "error": "completed job has no run_dir; cannot build a bundle",
+        }
+
+    try:
+        meta = create_bundle(
+            run_dir=Path(str(run_dir)),
+            workspace_dir=workspace_dir,
+            openclaw_workspace_dir=openclaw_workspace_dir,
+            ttl_hours=ttl_hours,
+        )
+    except BundleError as exc:
+        return {"run_id": run_id, "status": "error", "error": str(exc)}
+
+    meta["run_id"] = run_id
+    return _with_agent_guidance(meta, response_type="bundle")
+
+
 def get_transcription_job_artifact(
     *,
     run_id: str,
@@ -297,6 +357,10 @@ def count_active_jobs(*, workspace_dir: Path) -> int:
             continue
         job = _read_json_optional(job_dir / "job.json")
         if not job or job.get("status") in TERMINAL_STATUSES:
+            continue
+        # A hung job (no recent heartbeat) does not count against concurrency,
+        # even if its status on disk still says running.
+        if _is_job_stale(job):
             continue
         pid = _int_or_none(job.get("worker_pid"))
         if pid is None or _is_pid_alive(pid):
@@ -433,7 +497,9 @@ def _refresh_job_status(job_dir: Path, job: dict[str, Any]) -> dict[str, Any]:
         job = update_job_status(job_dir, **update_payload)
 
     pid = _int_or_none(job.get("worker_pid"))
-    if pid and not _is_pid_alive(pid):
+    pid_dead = bool(pid) and not _is_pid_alive(pid)
+
+    if pid_dead:
         if (job_dir / "result.json").exists():
             job = update_job_status(
                 job_dir,
@@ -463,7 +529,38 @@ def _refresh_job_status(job_dir: Path, job: dict[str, Any]) -> dict[str, Any]:
                 error="worker process exited before writing result.json or error.json",
                 finished_at=job.get("finished_at") or _now_iso(),
             )
+        return job
+
+    # PID still alive (or unknown) but the worker has not emitted a heartbeat
+    # within JOB_STALE_SECONDS -> treat as hung. This prevents a stuck job from
+    # holding a max_concurrent_jobs slot forever. The marker is terminal, so it
+    # stops counting against concurrency and the user gets a clear state.
+    if _is_job_stale(job):
+        job = update_job_status(
+            job_dir,
+            status="stale_failed",
+            stage="stale",
+            message=(
+                f"Job exceeded {JOB_STALE_SECONDS}s without a heartbeat and was "
+                "marked stale. Cancel/retry; it no longer blocks concurrency."
+            ),
+            error="no heartbeat within JOB_STALE_SECONDS (worker hung or unresponsive)",
+            finished_at=job.get("finished_at") or _now_iso(),
+        )
     return job
+
+
+def _is_job_stale(job: dict[str, Any]) -> bool:
+    """True if a non-terminal job has not produced a heartbeat recently."""
+    if job.get("status") in TERMINAL_STATUSES:
+        return False
+    if JOB_STALE_SECONDS <= 0:
+        return False
+    marker = job.get("heartbeat_at") or job.get("started_at") or job.get("updated_at")
+    marker_ts = _parse_iso_timestamp(marker) if marker else None
+    if marker_ts is None:
+        return False
+    return (datetime.now(UTC).timestamp() - marker_ts) > JOB_STALE_SECONDS
 
 
 def _public_job(job_dir: Path, job: dict[str, Any]) -> dict[str, Any]:
@@ -484,6 +581,7 @@ def _public_job(job_dir: Path, job: dict[str, Any]) -> dict[str, Any]:
         "created_at",
         "updated_at",
         "started_at",
+        "heartbeat_at",
         "finished_at",
         "worker_pid",
         "result_available",
@@ -526,6 +624,18 @@ def _agent_guidance(payload: dict[str, Any], *, response_type: str) -> dict[str,
                 "recommended_poll_seconds.",
                 "When status becomes completed, call get_transcription_result before "
                 "answering with the transcript.",
+            ],
+        }
+
+    if status == "completed" and response_type == "bundle":
+        return {
+            "user_visible_message": "Transcription bundle (.zip) is ready to send.",
+            "recommended_next_tool": None,
+            "recommended_poll_seconds": None,
+            "agent_instructions": [
+                "Send the file at bundle_path_for_openclaw to the user as an attachment.",
+                "Do NOT rebuild the file by hand or send a plain .txt; use this .zip.",
+                "If the bundle expired or is missing later, call this tool again to regenerate it.",
             ],
         }
 
@@ -598,6 +708,21 @@ def _agent_guidance(payload: dict[str, Any], *, response_type: str) -> dict[str,
                 "Tell the user the transcription failed.",
                 "Use error, failed_attempts, and logs if present to explain the likely cause.",
                 "Do not keep polling this run_id unless the job state changes externally.",
+            ],
+        }
+
+    if status == "stale_failed":
+        return {
+            "user_visible_message": _terminal_user_message(
+                payload,
+                fallback="Transcription stalled (no progress) and was stopped.",
+            ),
+            "recommended_next_tool": "start_youtube_transcription",
+            "recommended_poll_seconds": None,
+            "agent_instructions": [
+                "Tell the user the transcription stalled and was stopped automatically.",
+                "This run_id is terminal; do not poll it. Start a new transcription to retry.",
+                "It no longer blocks concurrency.",
             ],
         }
 

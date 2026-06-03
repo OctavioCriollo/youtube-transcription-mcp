@@ -23,6 +23,39 @@ from transcription_mcp.tools import register_tools
 logger = logging.getLogger("transcription_mcp")
 
 
+def _register_health_route(mcp: FastMCP, cfg: Config) -> None:
+    """Add a real /health route used by the container healthcheck.
+
+    A plain TCP probe can pass while the MCP is actually hung. This route does a
+    real internal check: the workspace is reachable and the job store can be
+    listed. It returns 200 only when those succeed.
+    """
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+
+    @mcp.custom_route("/health", methods=["GET"])
+    async def health(_request: Request) -> JSONResponse:  # noqa: ANN001
+        try:
+            from transcription_mcp.jobs import count_active_jobs
+
+            cfg.ensure_directories()
+            active = count_active_jobs(workspace_dir=cfg.workspace_dir)
+            return JSONResponse(
+                {
+                    "status": "ok",
+                    "transport": cfg.transport,
+                    "workspace_dir": str(cfg.workspace_dir),
+                    "active_jobs": active,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("health check failed: %s", exc)
+            return JSONResponse(
+                {"status": "error", "error": f"{type(exc).__name__}: {exc}"},
+                status_code=503,
+            )
+
+
 def create_server(config: Config | None = None) -> FastMCP:
     cfg = config or Config.from_env()
     cfg.ensure_directories()
@@ -35,6 +68,7 @@ def create_server(config: Config | None = None) -> FastMCP:
         json_response=True,
     )
     register_tools(mcp, cfg)
+    _register_health_route(mcp, cfg)
     return mcp
 
 

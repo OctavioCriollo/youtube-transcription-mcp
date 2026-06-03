@@ -24,4 +24,12 @@ ENV WORKSPACE_DIR=/workspace \
 VOLUME ["/workspace"]
 EXPOSE 8000
 
+# Real healthcheck: hit the /health route (HTTP transport) instead of just
+# checking the TCP port. /health verifies the workspace and job store are
+# reachable, so a hung-but-listening MCP is reported unhealthy.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=5 \
+    CMD python -c "import os,urllib.request,sys; \
+url='http://127.0.0.1:'+os.environ.get('MCP_PORT','8000')+'/health'; \
+sys.exit(0 if urllib.request.urlopen(url, timeout=4).status==200 else 1)" || exit 1
+
 CMD ["python", "-m", "transcription_mcp.server"]

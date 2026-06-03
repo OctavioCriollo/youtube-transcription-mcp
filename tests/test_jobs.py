@@ -192,3 +192,59 @@ def test_cancel_transcription_job_marks_job_canceled(monkeypatch, tmp_path):
 
     assert status["status"] == "canceled"
     assert status["stage"] == "canceled"
+
+
+def test_create_bundle_packages_artifacts_and_rebases_path(tmp_path):
+    from transcription_mcp.bundle import create_bundle
+
+    run = tmp_path / "v4-storage" / "items" / "url-x" / "runs" / "run_1"
+    run.mkdir(parents=True)
+    (run / "transcript.txt").write_text("hola", encoding="utf-8")
+    (run / "subtitles.srt").write_text("1\n", encoding="utf-8")
+    (run / "run.json").write_text("{}", encoding="utf-8")
+
+    meta = create_bundle(
+        run_dir=run,
+        workspace_dir=tmp_path,
+        openclaw_workspace_dir="/home/node/.openclaw/mcp-workspace/transcription-mcp",
+        ttl_hours=24,
+    )
+
+    assert meta["status"] == "completed"
+    assert set(meta["included_artifacts"]) == {"transcript.txt", "subtitles.srt", "run.json"}
+    assert meta["size_bytes"] > 0
+    assert len(meta["sha256"]) == 64
+    assert (run / "exports" / "transcription_bundle.zip").is_file()
+    # path is rebased from the MCP workspace to the OpenClaw read-only mount
+    assert meta["bundle_path_for_openclaw"].startswith(
+        "/home/node/.openclaw/mcp-workspace/transcription-mcp/"
+    )
+    assert meta["bundle_path_for_openclaw"].endswith(
+        "runs/run_1/exports/transcription_bundle.zip"
+    )
+
+
+def test_create_bundle_raises_when_no_artifacts(tmp_path):
+    from transcription_mcp.bundle import BundleError, create_bundle
+
+    run = tmp_path / "runs" / "empty"
+    run.mkdir(parents=True)
+    try:
+        create_bundle(run_dir=run, workspace_dir=tmp_path)
+        assert False, "expected BundleError"
+    except BundleError:
+        pass
+
+
+def test_is_job_stale_detects_old_heartbeat(monkeypatch):
+    from transcription_mcp import jobs
+
+    monkeypatch.setattr(jobs, "JOB_STALE_SECONDS", 180.0)
+    fresh = {"status": "running", "heartbeat_at": jobs._now_iso()}
+    assert jobs._is_job_stale(fresh) is False
+
+    old = {"status": "running", "heartbeat_at": "2000-01-01T00:00:00+00:00"}
+    assert jobs._is_job_stale(old) is True
+
+    terminal = {"status": "completed", "heartbeat_at": "2000-01-01T00:00:00+00:00"}
+    assert jobs._is_job_stale(terminal) is False
