@@ -21,7 +21,12 @@ ENV WORKSPACE_DIR=/workspace \
     MCP_HTTP_PATH=/mcp \
     PYTHONUNBUFFERED=1
 
-VOLUME ["/workspace"]
+# NOTE: no `VOLUME` directive on purpose. In production the workspace is provided
+# by an externally-managed mount (the shared `openclaw_mcp_workspace` volume at
+# /mcp-workspace, with WORKSPACE_DIR=/mcp-workspace/transcription-mcp). Declaring
+# VOLUME ["/workspace"] here would make Docker spawn a throwaway anonymous volume
+# on every container (re)create — orphaned cruft that accumulates over redeploys.
+# Persistence is the deployer's responsibility via -v / compose volumes.
 EXPOSE 8000
 
 # Real healthcheck: hit the /health route (HTTP transport) instead of just
