@@ -187,6 +187,12 @@ Asynchronous production flow:
 Use the async flow for long videos, production agents, or any client where a
 silent long-running MCP call would look blocked.
 
+Delivery (for hosts that send files back to the user, e.g. OpenClaw):
+
+| Tool                          | Purpose                                                                |
+| ----------------------------- | ---------------------------------------------------------------------- |
+| `create_transcription_bundle` | Packages all artifacts of a completed `run_id` into a single `.zip` and returns both the MCP-side path and the host-side path (`bundle_path_for_openclaw`) so the host can read and send it. See [Bundle delivery](#-production-hardening-health-stale-jobs-bundle-delivery). |
+
 ### Agent workflow guidance
 
 Async job responses include a small guidance contract for LLM clients:
@@ -272,6 +278,9 @@ a missing key simply skips that level.
 | `MCP_CACHE_TTL_HOURS`| `24`                             | Completed-run reuse window. Set `0` to disable cache hits.  |
 | `MCP_MAX_CONCURRENT_JOBS` | `2`                        | Maximum active async worker jobs.                           |
 | `MCP_JOB_TTL_HOURS`  | `168`                            | Cleanup window for completed/failed/canceled MCP job records. |
+| `TRANSCRIPTION_JOB_STALE_SECONDS` | `180`               | Seconds without a heartbeat before a running job is marked `stale_failed` (frees the concurrency slot). `0` disables. |
+| `TRANSCRIPTION_JOB_TIMEOUT_SECONDS` | `3600`            | Hard ceiling in seconds for a single job. `0` disables.     |
+| `OPENCLAW_WORKSPACE_DIR` | —                            | How the host (OpenClaw gateway) sees this MCP's workspace via its read-only mount. Used only to report `bundle_path_for_openclaw`; the MCP never reads/writes this path. |
 
 > With **no** API keys set, only the free YouTube-captions level is available.
 
@@ -283,13 +292,59 @@ When it is omitted, the MCP uses an OS-standard per-user data directory:
 - Linux: `$XDG_STATE_HOME/transcription-mcp/workspace`, or
   `~/.local/state/transcription-mcp/workspace` when `XDG_STATE_HOME` is unset
 
-Docker images in this repo set `WORKSPACE_DIR=/workspace` explicitly. The MCP no
-longer probes `/workspace` implicitly, because on Windows that can resolve to a
-drive-root directory outside the user's normal application data area.
+Docker images in this repo set `WORKSPACE_DIR=/workspace` as the standalone
+default. The MCP no longer probes `/workspace` implicitly, because on Windows that
+can resolve to a drive-root directory outside the user's normal application data
+area.
+
+**Production (OpenClaw) override.** In the OpenClaw deployment the workspace lives
+on a shared volume so the host can read artifacts. There, `WORKSPACE_DIR` is set to
+`/mcp-workspace/transcription-mcp` (a per-MCP subdirectory of the shared
+`openclaw_mcp_workspace` volume), and `OPENCLAW_WORKSPACE_DIR` tells the MCP how the
+gateway sees that same volume (read-only) so it can report `bundle_path_for_openclaw`.
+The image intentionally declares **no** `VOLUME` directive: persistence is the
+deployer's job via the mounted volume. (A bare `VOLUME ["/workspace"]` would make
+Docker spawn a throwaway anonymous volume on every container recreate.)
 
 `YT_COOKIES_FILE` and `YT_PROXY` are optional. If neither is set, behavior is
 unchanged. If `YT_COOKIES_FILE` is set but the file does not exist, startup fails
 fast because that is a host misconfiguration.
+
+---
+
+## 🩺 Production hardening (health, stale jobs, bundle delivery)
+
+These features address two real production problems: an MCP that was *alive but
+useless* after a failed/hung job, and a host that could not deliver MCP-generated
+files.
+
+**`/health` endpoint (HTTP transport).** The server exposes `GET /health` returning
+`{"status":"ok","transport":...,"workspace_dir":...,"active_jobs":N}` (200) or 503.
+The Docker `HEALTHCHECK` hits this route instead of merely checking the TCP port, so
+a hung-but-listening MCP is reported `unhealthy` and the runtime can restart it.
+
+**Heartbeat + stale detection.** A running worker writes `heartbeat_at` every ~2s.
+If a non-terminal job goes longer than `TRANSCRIPTION_JOB_STALE_SECONDS` (default
+180) without a heartbeat, it is moved to the terminal state `stale_failed` and stops
+counting as active, freeing the concurrency slot. `agent_guidance` then recommends
+retrying. `TRANSCRIPTION_JOB_TIMEOUT_SECONDS` is a hard per-job ceiling.
+
+**Bundle delivery (`create_transcription_bundle`).** Hosts like OpenClaw run the MCP
+in a separate container and need to *read* the artifacts to send them to the user.
+The tool packages a completed run's artifacts into
+`<run_dir>/exports/transcription_bundle.zip` (atomic write) on the shared volume and
+returns:
+
+| Field | Meaning |
+| --- | --- |
+| `bundle_path_for_mcp` | Path as the MCP sees it (e.g. `/mcp-workspace/transcription-mcp/...`). |
+| `bundle_path_for_openclaw` | The **same** file rebased to how the host sees it via its read-only mount (e.g. `/home/node/.openclaw/mcp-workspace/transcription-mcp/...`). The host sends **this**. |
+| `sha256`, `size_bytes`, `included_artifacts`, `expires_at` | Integrity + contents + TTL. |
+
+The bundle is **temporary and regenerable** — the source of truth stays in
+`v4-storage`; it can be cleaned by TTL without data loss. Path rebasing uses
+`WORKSPACE_DIR` (MCP side) and `OPENCLAW_WORKSPACE_DIR` (host side). See
+[`docs/deploy.md`](docs/deploy.md) for the full OpenClaw deployment.
 
 ---
 
@@ -325,8 +380,9 @@ youtube-transcription-mcp/
 │   ├── transcription_mcp/            # MCP layer (~350 LOC)
 │   │   ├── server.py                 # FastMCP setup, stdio/http dispatch
 │   │   ├── tools.py                  # sync + async MCP tool registration
-│   │   ├── jobs.py                   # persistent async job status/result/cancel
-│   │   ├── worker.py                 # subprocess worker for long transcriptions
+│   │   ├── jobs.py                   # persistent async job status/result/cancel + stale detection
+│   │   ├── worker.py                 # subprocess worker (writes heartbeat_at) for long transcriptions
+│   │   ├── bundle.py                 # package run artifacts into a .zip, rebase host path
 │   │   ├── pipeline.py               # 3-level fallback orchestration
 │   │   ├── youtube_subtitles.py      # captions via youtube-transcript-api
 │   │   └── config.py                 # env-var configuration
@@ -389,6 +445,10 @@ curl -s -X POST http://localhost:8000/mcp \
 - [x] Optional SRT / VTT output for the agent via artifact manifest/content.
 - [x] Diarization passthrough (speaker labels) on the ElevenLabs path.
 - [x] Background TTL cleanup for MCP job records.
+- [x] Real `/health` endpoint + Docker `HEALTHCHECK` (detects hung-but-listening MCP).
+- [x] Heartbeat + `stale_failed` detection (a dead/hung worker stops blocking a slot).
+- [x] Bundle delivery (`create_transcription_bundle`) with MCP↔host path rebasing.
+- [x] Dropped `VOLUME ["/workspace"]` from the image (no orphaned anonymous volumes).
 
 ---
 

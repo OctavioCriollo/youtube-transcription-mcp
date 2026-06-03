@@ -5,15 +5,80 @@ CLI accessible on the host machine.
 
 ## Deployment models
 
-Three valid models per the official [OpenClaw MCP docs](https://docs.openclaw.ai/cli/mcp):
-
 | Model | When to pick it |
 | --- | --- |
-| **A. uvx from your GitHub repo** (this guide, recommended) | Standard OpenClaw pattern. Auto-installs the package on first use. Works on cloud for videos with captions. |
-| **B. uvx from PyPI** | Same as A but the package is published publicly to PyPI. Add later if you want third-party consumers. |
-| **C. Remote HTTP (streamable-http)** | When you need yt-dlp to run from a residential IP — host this MCP on your home PC and reach it over Tailscale. |
+| **P. Containerized streamable-http in a separate stack** (production, recommended) | What this project actually runs in production with OpenClaw on a VPS. A prebuilt GHCR image runs as its own Docker Compose stack alongside OpenClaw, sharing a private network and an artifacts volume. Adding/removing an MCP never touches the OpenClaw stack. See [Production deployment](#production-deployment-containerized-recommended) below. |
+| **A. uvx from your GitHub repo** | Simple local/dev pattern. OpenClaw launches the server as a child process via `uvx`. No container, but the OpenClaw host must have `uv` + `ffmpeg`, and config (incl. API keys) lives in `openclaw.json`. |
+| **B. uvx from PyPI** | Same as A but the package is published publicly to PyPI. |
+| **C. Remote HTTP over Tailscale** | When you need yt-dlp to run from a residential IP — host this MCP on your home PC and reach it over Tailscale. |
 
-This guide focuses on **Model A**.
+> **Why P (containerized) is the production choice and A (uvx) was demoted:**
+> the audio path needs `ffmpeg`/`yt-dlp`, which are not in OpenClaw's gateway image;
+> baking them in (or installing at runtime) is fragile and lost on container
+> recreate. The uvx model also stored provider API keys inside `openclaw.json`.
+> The containerized model ships its own dependencies in a self-contained image, keeps
+> keys in the MCP stack's `.env`, and scales: a new MCP is just another service in the
+> MCP stack, registered once with `openclaw mcp set`.
+
+The **full, operator-grade procedure** for Model P (compose files, shared network +
+volume ownership, registration, verification, troubleshooting) lives in the OpenClaw
+deployment repo: `OpenClaw v1.0/mcp-servers/README.md` and
+`OpenClaw v1.0/doc/configuracion_openclaw_paso_a_paso.md` (section 24). The summary
+below is the MCP-side view.
+
+## Production deployment (containerized, recommended)
+
+The MCP runs as a container from the published GHCR image
+(`ghcr.io/octaviocriollo/youtube-transcription-mcp:latest`) in a **separate** Docker
+Compose stack (`mcp-servers/openclaw-mcp-servers.yml` in the OpenClaw repo). It shares
+two resources that the **OpenClaw stack owns and creates** (fixed name, not external):
+
+| Resource | Purpose |
+| --- | --- |
+| network `openclaw-mcp-network` | Private gateway ↔ MCP traffic. Not exposed to the internet, no Traefik labels. |
+| volume `openclaw_mcp_workspace` | Shared artifacts. Mounted **read-only** on the gateway at `/home/node/.openclaw/mcp-workspace`; **read-write** on the MCP at `/mcp-workspace`. Each MCP writes under its own subdirectory. |
+
+Key environment for the container (set in the MCP stack `.env`):
+
+```bash
+MCP_TRANSPORT=streamable-http
+WORKSPACE_DIR=/mcp-workspace/transcription-mcp                 # per-MCP subdir of the shared volume
+OPENCLAW_WORKSPACE_DIR=/home/node/.openclaw/mcp-workspace/transcription-mcp  # how the gateway sees it (ro)
+TRANSCRIPTION_JOB_STALE_SECONDS=180
+TRANSCRIPTION_JOB_TIMEOUT_SECONDS=3600
+GROQ_API_KEY=...
+ELEVENLABS_API_KEY=...
+```
+
+Bring up OpenClaw first (it creates the network + volume), then the MCP stack, then
+register once:
+
+```bash
+docker exec <gateway-container> \
+  openclaw mcp set youtube-transcription \
+  '{"url":"http://transcription-mcp:8000/mcp","transport":"streamable-http"}'
+```
+
+Delivery: when the agent needs to send a file, it calls `create_transcription_bundle`
+and sends `bundle_path_for_openclaw` (the gateway reads it through the read-only
+mount). The image declares **no** `VOLUME`; persistence is the shared volume.
+
+Health: the Docker `HEALTHCHECK` hits `GET /health`, so a hung-but-listening MCP is
+restarted. Verify reachability from the gateway:
+
+```bash
+docker exec <gateway-container> sh -lc \
+  'node -e "fetch(\"http://transcription-mcp:8000/health\").then(async r=>console.log(r.status, await r.text()))"'
+# expected: 200 {"status":"ok","transport":"streamable-http","workspace_dir":"/mcp-workspace/transcription-mcp","active_jobs":0}
+```
+
+---
+
+## Alternative: uvx child-process (Model A, local/dev)
+
+The rest of this guide documents **Model A** (`uvx`), useful for a quick local setup
+where OpenClaw runs natively (not in a container) and has `uv` + `ffmpeg` available.
+For production on a VPS, prefer Model P above.
 
 ## 1. Install `uv` on the OpenClaw host (one time)
 

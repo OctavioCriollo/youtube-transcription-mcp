@@ -42,6 +42,11 @@ binary (see `MCP_TRANSPORT=streamable-http`), and is the right escape
 hatch when the MCP needs to run on a different host than OpenClaw
 (typically your home PC via Tailscale, to avoid YouTube IP blocking).
 
+> **Superseded (2026-06-03) for the production OpenClaw deployment.** The uvx
+> child-process model was demoted to a local/dev option. Production now runs the
+> containerized streamable-http model in a separate stack — see
+> "Production deployment: containerized streamable-http" below for why.
+
 ## Default transport: stdio
 
 `uvx` launches the process and talks to it over stdin/stdout. So the
@@ -306,6 +311,74 @@ The MCP layer exposes production features without changing the default path:
   semantics.
 - Async workers enforce a simple host-level concurrency limit and clean old job
   records. v4 transcript artifacts are not deleted by that job cleanup.
+
+## Production deployment: containerized streamable-http (supersedes uvx side-car)
+
+2026-06-03, after validating the end-to-end flow on the production VPS.
+
+The walking skeleton shipped with the uvx child-process model as the recommended
+distribution. Running it for real against OpenClaw exposed three problems that the
+uvx model could not solve cleanly:
+
+- The audio path needs `ffmpeg` and `yt-dlp`. These are not in OpenClaw's gateway
+  image. Installing them into the gateway at runtime is lost on container recreate;
+  rebuilding the provider image is not our call.
+- The uvx registration stored provider API keys inside `openclaw.json`.
+- Adding another MCP meant editing OpenClaw's own config/host each time.
+
+Decision: production runs a **prebuilt GHCR image** (`youtube-transcription-mcp`) as
+its **own Docker Compose stack** next to OpenClaw, over `streamable-http`. The image
+is self-contained (ffmpeg + yt-dlp + engine baked in). The MCP stack and the OpenClaw
+gateway share a private network (`openclaw-mcp-network`) and an artifacts volume
+(`openclaw_mcp_workspace`), both **owned/created by the OpenClaw stack** (fixed name,
+not external) and joined as external by the MCP stack. Adding an MCP is just another
+service in the MCP stack plus one `openclaw mcp set`. The uvx model remains documented
+as a local/dev option. Full operator procedure lives in the OpenClaw repo.
+
+## Corrective: dropped `VOLUME ["/workspace"]` from the image
+
+2026-06-03. The Dockerfile declared `VOLUME ["/workspace"]` from the walking-skeleton
+era. Once production moved `WORKSPACE_DIR` to `/mcp-workspace/transcription-mcp` (a
+subdirectory of the shared volume), `/workspace` was unused — but the `VOLUME`
+directive still forced Docker to create a throwaway **anonymous volume** for it on
+every container (re)create. Those accumulate as orphaned dangling volumes across
+redeploys.
+
+Decision: remove the `VOLUME` directive entirely. Persistence is the deployer's job
+via the externally-mounted shared volume. `ENV WORKSPACE_DIR=/workspace` stays only as
+a harmless standalone default. Verified on the VPS: after the fix + redeploy the MCP
+container has a single mount (`/mcp-workspace`), and dangling volumes dropped to 0.
+
+## Bundle delivery and host path rebasing
+
+The agent (OpenClaw) runs in a different container than the MCP, so it cannot reach
+the MCP's internal filesystem to send a file to the user. Rather than stream large
+artifacts back through the MCP protocol, `create_transcription_bundle` packages a
+completed run's artifacts into `<run_dir>/exports/transcription_bundle.zip` (atomic
+write) on the **shared** volume and returns two paths: `bundle_path_for_mcp` (MCP view)
+and `bundle_path_for_openclaw` (the same file rebased to the host's read-only mount,
+computed from `WORKSPACE_DIR` and `OPENCLAW_WORKSPACE_DIR`). The host sends the second.
+
+The bundle is temporary and regenerable; the source of truth stays in `v4-storage`, so
+TTL cleanup of bundles loses no data. This keeps the MCP a content provider, not a
+delivery/transport service — consistent with "the agent IS the publisher".
+
+## Job liveness: heartbeat, `stale_failed`, and `/health`
+
+Persisted job polling (above) tells a client *what the job said last*, but a worker
+that dies or hangs would otherwise leave a job stuck in `running` forever, holding a
+concurrency slot. Two additions close that gap:
+
+- The worker writes `heartbeat_at` every ~2s. A non-terminal job with no heartbeat for
+  longer than `TRANSCRIPTION_JOB_STALE_SECONDS` is moved to the terminal state
+  `stale_failed` and stops counting as active. `TRANSCRIPTION_JOB_TIMEOUT_SECONDS` is a
+  hard ceiling.
+- A real `GET /health` route reports workspace + job-store reachability and active job
+  count. The Docker `HEALTHCHECK` hits it instead of a bare TCP check, so a
+  hung-but-listening MCP is reported `unhealthy` and restarted.
+
+This is deliberately host-level liveness, not a distributed scheduler — matching the
+personal-scale design.
 
 ## Anti-patterns to watch for in future iterations
 
