@@ -38,8 +38,8 @@ jobs:
       - name: Lint (ruff)
         run: uv run --frozen ruff check .
 
-      - name: Dependency consistency (pip check)
-        run: uv run --frozen python -m pip check
+      - name: Dependency consistency (uv pip check)
+        run: uv pip check
 
       - name: Tests (pytest)
         run: uv run --frozen pytest

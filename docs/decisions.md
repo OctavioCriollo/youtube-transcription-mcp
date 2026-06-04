@@ -506,7 +506,7 @@ The publish workflow first runs:
 ```bash
 uv sync --frozen --extra dev
 uv run --frozen ruff check .
-uv run --frozen python -m pip check
+uv pip check
 uv run --frozen pytest
 ```
 

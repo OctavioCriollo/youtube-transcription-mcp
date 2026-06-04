@@ -440,7 +440,7 @@ uv sync --frozen --extra dev
 
 uv run --frozen pytest
 uv run --frozen ruff check .
-uv run --frozen python -m pip check
+uv pip check
 ```
 
 Run locally over stdio (what `uvx` does):
