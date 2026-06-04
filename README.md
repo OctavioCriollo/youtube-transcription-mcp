@@ -9,6 +9,12 @@ smart 3-level fallback chain: **Groq → ElevenLabs → YouTube captions**. Drop
 OpenClaw, Claude Code, Claude Desktop, Cursor, or any MCP client and ask for a transcript
 from any chat.
 
+[![CI](https://github.com/OctavioCriollo/youtube-transcription-mcp/actions/workflows/publish.yml/badge.svg?branch=main)](https://github.com/OctavioCriollo/youtube-transcription-mcp/actions/workflows/publish.yml)
+[![MCP compatible](https://img.shields.io/badge/MCP-compatible-blueviolet?style=flat-square)](https://modelcontextprotocol.io)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square)](https://www.python.org/downloads/)
+[![Transport](https://img.shields.io/badge/transport-stdio%20%7C%20HTTP-green?style=flat-square)](docs/deploy.md)
+[![Providers](https://img.shields.io/badge/providers-Groq%20%7C%20ElevenLabs%20%7C%20captions-orange?style=flat-square)](docs/decisions.md)
+
 </div>
 
 ---
