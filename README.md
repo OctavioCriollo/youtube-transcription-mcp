@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🎙️ YouTube Transcription MCP
+# YouTube Transcription MCP
 
 **Turn any YouTube link into clean text — straight from your AI assistant.**
 
@@ -9,16 +9,11 @@ smart 3-level fallback chain: **Groq → ElevenLabs → YouTube captions**. Drop
 OpenClaw, Claude Code, Claude Desktop, Cursor, or any MCP client and ask for a transcript
 from any chat.
 
-[![MCP](https://img.shields.io/badge/MCP-compatible-blueviolet)](https://modelcontextprotocol.io)
-[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org)
-[![Transport](https://img.shields.io/badge/transport-stdio%20%7C%20http-green)]()
-[![Providers](https://img.shields.io/badge/providers-Groq%20%7C%20ElevenLabs%20%7C%20CC-orange)]()
-
 </div>
 
 ---
 
-## ✨ Why this exists
+## Why this exists
 
 You send a YouTube link to your assistant on Telegram (or any channel) and ask:
 *"transcribe this for me."* This MCP makes that work — reliably, cheaply, and from
@@ -28,18 +23,16 @@ The hard part of YouTube transcription is not the speech-to-text. It's **getting
 audio** when YouTube actively blocks downloads from cloud server IPs. This server solves
 that with a chain that always finds a working path:
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│  transcribe_youtube(url) or async start/status/result tools             │
-│                                                                        │
-│  1. Groq Whisper        ─ cheapest (~$0.04/hr), needs yt-dlp download  │
-│        │ fails? (e.g. YouTube blocks the host IP)                      │
-│        ▼                                                               │
-│  2. ElevenLabs Scribe   ─ cloud-safe (~$0.22/hr); ElevenLabs fetches   │
-│        │ fails?           the URL on THEIR servers — no IP block       │
-│        ▼                                                               │
-│  3. YouTube captions    ─ free, lower quality, last resort            │
-└──────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    A["transcribe_youtube(url)<br/>or async start/status/result tools"]
+    B["1. Groq Whisper<br/>Cheapest (~$0.04/hr)<br/>Needs yt-dlp download"]
+    C["2. ElevenLabs Scribe<br/>Cloud-safe (~$0.22/hr)<br/>ElevenLabs fetches the URL on its servers"]
+    D["3. YouTube captions<br/>Free, lower quality, last resort"]
+
+    A --> B
+    B -->|"fails, for example YouTube blocks the host IP"| C
+    C -->|"fails"| D
 ```
 
 The first level that succeeds wins. The response tells the agent **which method was used**
@@ -48,7 +41,7 @@ hand back low-quality captions as if they were premium audio transcription.
 
 ---
 
-## 🚀 Features
+## Features
 
 - **Simple sync path.** `transcribe_youtube(url, language?)` still returns a transcript in one call.
 - **Production async path.** `start_youtube_transcription` returns a `run_id`;
@@ -73,7 +66,7 @@ hand back low-quality captions as if they were premium audio transcription.
 
 ---
 
-## 📦 Installation
+## Installation
 
 ### As an MCP server (recommended)
 
@@ -145,7 +138,7 @@ claude mcp add transcription-youtube \
 
 ---
 
-## 🎬 Usage
+## Usage
 
 From any connected chat (Telegram, Discord, WebChat, or the Claude Code prompt):
 
@@ -277,7 +270,7 @@ Common optional parameters:
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
 All configuration is via environment variables. Each provider level is optional —
 a missing key simply skips that level.
@@ -334,7 +327,7 @@ fast because that is a host misconfiguration.
 
 ---
 
-## 🩺 Production hardening (health, stale jobs, bundle delivery)
+## Production hardening (health, stale jobs, bundle delivery)
 
 These features address two real production problems: an MCP that was *alive but
 useless* after a failed/hung job, and a host that could not deliver MCP-generated
@@ -370,7 +363,7 @@ The bundle is **temporary and regenerable** — the source of truth stays in
 
 ---
 
-## 🌐 Hosting as a remote service (optional)
+## Hosting as a remote service (optional)
 
 Prefer to run it as a long-lived HTTP service (e.g. on a separate machine reached over
 Tailscale, so the Groq path uses a residential IP)? Switch the transport:
@@ -394,7 +387,7 @@ A `Dockerfile` and `docker-compose.snippet.yml` are included for container deplo
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```text
 youtube-transcription-mcp/
@@ -430,7 +423,7 @@ See [`docs/decisions.md`](docs/decisions.md) for the full rationale.
 
 ---
 
-## 🧪 Development
+## Development
 
 ```bash
 git clone https://github.com/OctavioCriollo/youtube-transcription-mcp.git
@@ -461,7 +454,7 @@ curl -s -X POST http://localhost:8000/mcp \
 
 ---
 
-## 🗺️ Roadmap
+## Roadmap
 
 - [x] Async job model with status polling (for videos > 30 min).
 - [x] File/media ingestion for local files and public media URLs.
@@ -475,7 +468,7 @@ curl -s -X POST http://localhost:8000/mcp \
 
 ---
 
-## 📄 License
+## License
 
 Choose a license (MIT recommended for MCP servers) and add a `LICENSE` file.
 
