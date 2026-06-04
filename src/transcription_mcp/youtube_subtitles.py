@@ -109,9 +109,23 @@ def fetch_subtitles_transcript(
     if not snippets:
         raise NoSubtitlesAvailable(f"empty caption list for video {video_id}")
 
-    text = " ".join((snippet.text or "").strip() for snippet in snippets if snippet.text)
-    last = snippets[-1]
-    duration_s = float(last.start) + float(last.duration)
+    # YouTube delivers captions ALREADY segmented into timed blocks. Each block is
+    # the equivalent of the word->cue grouping that the audio providers do for us,
+    # so we preserve the blocks (Corrective 6) instead of flattening to plain text.
+    # Timestamps are caption-level (per block), not word-level.
+    segments: list[dict[str, Any]] = []
+    for snippet in snippets:
+        s_text = (snippet.text or "").strip()
+        if not s_text:
+            continue
+        start = max(0.0, float(snippet.start))
+        duration = max(0.0, float(snippet.duration))
+        segments.append({"start": start, "end": start + duration, "text": s_text})
+    if not segments:
+        raise NoSubtitlesAvailable(f"empty caption text for video {video_id}")
+
+    text = " ".join(seg["text"] for seg in segments)
+    duration_s = max(seg["end"] for seg in segments)
     used_language = getattr(fetched, "language_code", None) or "unknown"
 
     metadata = _fetch_oembed_metadata(video_id)
@@ -123,17 +137,18 @@ def fetch_subtitles_transcript(
         "model": "youtube-captions",
         "provider": "youtube-transcript-api",
         "estimated_cost_usd": 0.0,
+        # Timed caption blocks; the pipeline turns these into a real run (canonical,
+        # transcript, timestamps, SRT/VTT) using the shared storage writer.
+        "segments": segments,
+        "timestamp_level": "caption",
+        "word_timestamps": False,
+        "source_timestamps": "youtube_captions",
         "youtube": {
             "video_id": video_id,
             "title": metadata.get("title"),
             "channel": metadata.get("author_name"),
         },
         "method": "subtitles",
-        "quality_status": "pass",
-        "audit": {
-            "status": "info",
-            "verdict": "fetched from YouTube captions (no quality scoring performed)",
-        },
     }
 
 

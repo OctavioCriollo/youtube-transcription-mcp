@@ -18,8 +18,12 @@ from transcription_v4.pipeline import (
     transcribe_youtube as v4_transcribe_youtube,
 )
 from transcription_v4.providers import ELEVENLABS_PROVIDER, GROQ_PROVIDER, LOCAL_PROVIDER
-from transcription_v4.storage import item_id_for_file, item_id_for_url
+from transcription_v4.storage import FilesystemStorage, item_id_for_file, item_id_for_url
 from transcription_v4.youtube import YtDlpYoutubeDownloader
+from transcription_v4.models import CanonicalTranscript, Segment, SubtitleCue
+from transcription_v4.quality import evaluate_quality
+from transcription_v4.subtitles import SubtitleConfig
+from transcription_v4.text import wrap_lines
 
 from transcription_mcp.config import STORAGE_DIR_NAME
 from transcription_mcp.youtube_subtitles import (
@@ -293,6 +297,7 @@ def _transcribe_url_chain(
             result = _try_subtitles_fallback(
                 url=url,
                 language=language,
+                workspace_dir=workspace_dir,
                 failed_attempts=failed_attempts,
                 provider_order=providers,
                 status_callback=status_callback,
@@ -350,6 +355,7 @@ def _try_subtitles_fallback(
     *,
     url: str,
     language: str | None,
+    workspace_dir: Path,
     failed_attempts: dict[str, str],
     provider_order: tuple[str, ...],
     status_callback: StatusCallback | None,
@@ -362,7 +368,13 @@ def _try_subtitles_fallback(
         failed_attempts=failed_attempts.copy() or None,
     )
     try:
-        result = fetch_subtitles_transcript(url, language=language)
+        captions = fetch_subtitles_transcript(url, language=language)
+        run_dir = _build_subtitles_run(
+            url=url,
+            language=language,
+            captions=captions,
+            workspace_dir=workspace_dir,
+        )
     except (NoSubtitlesAvailable, ValueError) as exc:
         failed_attempts[SUBTITLES_PROVIDER] = _describe_exception(exc)
         _emit_status(
@@ -374,18 +386,110 @@ def _try_subtitles_fallback(
         )
         return None
 
-    result["failed_attempts"] = failed_attempts
+    # Same output contract as Groq/ElevenLabs: a real run_dir with the full
+    # artifact manifest, so create_transcription_bundle and
+    # get_transcription_artifact work for the subtitles path too.
+    result = _read_run_artifacts(run_dir)
     result["method"] = SUBTITLES_PROVIDER
     result["provider_order_effective"] = list(provider_order)
+    result["timestamp_level"] = captions.get("timestamp_level", "caption")
+    result["word_timestamps"] = bool(captions.get("word_timestamps", False))
     result["cache"] = {"hit": False}
+    if failed_attempts:
+        result["failed_attempts"] = failed_attempts
     _emit_status(
         status_callback,
         stage="completed",
         message="Transcription completed with YouTube captions fallback.",
         method=SUBTITLES_PROVIDER,
+        run_dir=str(run_dir),
         failed_attempts=failed_attempts.copy() or None,
     )
     return result
+
+
+def _build_subtitles_run(
+    *,
+    url: str,
+    language: str | None,
+    captions: dict[str, Any],
+    workspace_dir: Path,
+) -> Path:
+    """Persist YouTube captions as a normal run, reusing the shared storage writer.
+
+    YouTube already segments captions into timed blocks, so each block maps directly
+    to one canonical segment AND one subtitle cue (no word-level estimation). The
+    same `FilesystemStorage.save_run` used by the audio providers writes transcript,
+    timestamps, SRT/VTT, canonical, quality and audit artifacts.
+    """
+    raw_segments = captions.get("segments") or []
+    config = SubtitleConfig()
+    segments: list[Segment] = []
+    cues: list[SubtitleCue] = []
+    for index, block in enumerate(raw_segments):
+        text = str(block.get("text") or "").strip()
+        if not text:
+            continue
+        start = max(0.0, float(block.get("start") or 0.0))
+        end = max(start, float(block.get("end") or start))
+        segments.append(Segment(start=start, end=end, text=text))
+        lines = tuple(line for line in wrap_lines(text, config.max_chars_per_line) if line.strip())
+        cues.append(
+            SubtitleCue(
+                start=start,
+                end=end,
+                lines=lines or (text,),
+                source_word_range=(index, index + 1),
+            )
+        )
+    if not segments:
+        raise NoSubtitlesAvailable(f"no usable caption blocks for {url}")
+
+    used_language = str(captions.get("language") or "unknown")
+    transcript = CanonicalTranscript(
+        source=url,
+        provider="youtube-transcript-api",
+        model=str(captions.get("model") or "youtube-captions"),
+        language=used_language,
+        duration=float(captions.get("duration_s") or segments[-1].end),
+        segments=tuple(segments),
+    )
+    # Caption blocks have no word-level timestamps; allow_estimated keeps the
+    # word_timestamps check at "warning" (honest) instead of "error".
+    quality = evaluate_quality(
+        transcript, cues, config=config, allow_estimated_subtitles=True
+    )
+
+    youtube = captions.get("youtube") or {}
+    metadata = {
+        "source_type": "youtube",
+        "source_url": url,
+        "provider": SUBTITLES_PROVIDER,
+        "transcription_provider": SUBTITLES_PROVIDER,
+        "requested_language": language,
+        "detected_language": used_language,
+        "language": used_language,
+        "diarize": False,
+        "num_speakers": None,
+        "estimated_cost_usd": captions.get("estimated_cost_usd", 0.0),
+        "timestamp_level": captions.get("timestamp_level", "caption"),
+        "word_timestamps": bool(captions.get("word_timestamps", False)),
+        "source_timestamps": captions.get("source_timestamps", "youtube_captions"),
+        "youtube_video_id": youtube.get("video_id"),
+        "youtube_title": youtube.get("title"),
+        "youtube_channel": youtube.get("channel"),
+    }
+
+    storage = FilesystemStorage(Path(workspace_dir) / STORAGE_DIR_NAME)
+    run_paths = storage.create_run(item_id=item_id_for_url(url))
+    storage.save_run(
+        run_paths,
+        transcript=transcript,
+        cues=cues,
+        quality=quality,
+        metadata=metadata,
+    )
+    return run_paths.run_dir
 
 
 def _successful_result(

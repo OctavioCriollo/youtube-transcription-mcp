@@ -403,6 +403,32 @@ concurrency slot. Two additions close that gap:
 This is deliberately host-level liveness, not a distributed scheduler — matching the
 personal-scale design.
 
+## Subtitles produce a full run (blocks are already cues)
+
+2026-06-04 (corrective 5a). The YouTube-captions fallback used to return a flat dict
+and never wrote a run, so `create_transcription_bundle` AND `get_transcription_artifact`
+failed for subtitle-only results (no `run_dir`, no `artifacts`). Now the subtitles path
+persists a normal run via the shared `FilesystemStorage.save_run`, producing the same
+artifact set as Groq/ElevenLabs (transcript, timestamps, SRT/VTT, canonical, quality,
+audit) under `storage/`.
+
+Key design point: YouTube delivers captions **already segmented into timed blocks**,
+which is the equivalent of the word->cue grouping the audio providers need
+`SubtitleBuilder` for. So each block maps **directly** to one canonical `Segment`
+(no words) and one `SubtitleCue` (`wrap_lines` for line length) — **no word estimation,
+no re-grouping**. Because cues and transcript come from the same block text, token
+parity passes naturally.
+
+Timestamps are caption-level: `timestamp_level=caption`, `word_timestamps=false`. The
+run is built with `allow_estimated_subtitles=True` so the missing word timestamps are a
+**warning**, not an error. Promoting this to a "pass" via a caption-aware quality branch
+is deferred (corrective 5b); `warning` is the honest status for now. Cue-timing
+normalization (merging ultra-short / overlapping auto-caption blocks) is also 5b.
+
+Because subtitle runs are now real runs, they are cacheable like any other provider —
+which makes the cache-priority hardening (corrective 4: select by priority, not mtime)
+the recommended next step so a cached subtitles run never shadows a now-working Groq.
+
 ## Anti-patterns to watch for in future iterations
 
 Three failure modes to recognise if they reappear:
