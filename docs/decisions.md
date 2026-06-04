@@ -429,6 +429,29 @@ Because subtitle runs are now real runs, they are cacheable like any other provi
 which makes the cache-priority hardening (corrective 4: select by priority, not mtime)
 the recommended next step so a cached subtitles run never shadows a now-working Groq.
 
+## Cache respects priority and never serves subtitles (corrective 4)
+
+2026-06-04. The run cache used to return the **most recently written** run whose
+provider was anywhere in the order. That breaks priority: e.g. with
+`groq,elevenlabs,subtitles`, a cached `subtitles` run (written on a day Groq was
+IP-blocked) would be returned later even when Groq would now succeed. This became
+reachable once corrective 5a made subtitle runs real (and thus cacheable).
+
+Two changes in `_read_cached_result_from_runs`, both with **no new metadata**
+(provider is already in `run.json` as `transcription_provider`):
+
+1. **Select by priority, not recency.** Collect all valid/fresh/matching candidate
+   runs and pick the one whose provider has the **lowest index** in the current
+   order (ties broken by most recent). So a cached `groq` run wins over a newer
+   `elevenlabs` run.
+2. **Subtitles is never served from cache.** The fallback is excluded from cache
+   reuse entirely. It is cheap to recompute (one captions API call) and must never
+   shadow a real STT provider that may work now. (We do NOT trust a cached run's
+   old `failed_attempts`, because those reflect past conditions, not the present.)
+
+Net effect: the cache only saves work when a real-STT result already exists, and
+never serves the degraded path when a higher-priority provider could be retried.
+
 ## Anti-patterns to watch for in future iterations
 
 Three failure modes to recognise if they reappear:

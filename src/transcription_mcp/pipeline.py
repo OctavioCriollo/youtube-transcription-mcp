@@ -588,11 +588,19 @@ def _read_cached_result_from_runs(
 ) -> dict[str, Any] | None:
     if not runs_dir.is_dir():
         return None
-    for run_dir in sorted(
-        (path for path in runs_dir.iterdir() if path.is_dir()),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    ):
+
+    # Cache serves only "real STT" results, never the degraded subtitles fallback:
+    # subtitles is cheap to recompute and must never shadow a higher-priority
+    # provider that may work now. So a cached subtitles run is ignored here.
+    cacheable_order = tuple(p for p in provider_order if p != SUBTITLES_PROVIDER)
+    if not cacheable_order:
+        return None
+
+    # Collect every valid, fresh, matching candidate, then pick by PRIORITY
+    # (position in the order), not by recency. selected_provider already lives in
+    # run.json (transcription_provider), so no extra metadata is needed.
+    candidates: list[tuple[int, float, Path]] = []
+    for run_dir in (path for path in runs_dir.iterdir() if path.is_dir()):
         run_json_path = run_dir / "run.json"
         if not run_json_path.exists() or not _final_artifacts_complete(run_dir):
             continue
@@ -604,7 +612,7 @@ def _read_cached_result_from_runs(
             continue
         metadata = run_record.get("metadata", {}) or {}
         method = str(metadata.get("transcription_provider") or metadata.get("provider") or "")
-        if method not in provider_order:
+        if method not in cacheable_order:
             continue
         if source_url is not None and metadata.get("source_url") != source_url:
             continue
@@ -617,17 +625,26 @@ def _read_cached_result_from_runs(
             num_speakers=num_speakers,
         ):
             continue
-        result = _read_run_artifacts(run_dir)
-        result["method"] = method
-        result["provider_order_effective"] = list(provider_order)
-        result["cache"] = {
-            "hit": True,
-            "run_dir": str(run_dir),
-            "age_s": round(_age_seconds(run_json_path), 3),
-            "ttl_hours": cache_ttl_hours,
-        }
-        return result
-    return None
+        candidates.append((cacheable_order.index(method), run_dir.stat().st_mtime, run_dir))
+
+    if not candidates:
+        return None
+
+    # Lowest order-index wins (highest priority); break ties by most recent.
+    _, _, run_dir = min(candidates, key=lambda item: (item[0], -item[1]))
+    run_json_path = run_dir / "run.json"
+    metadata = _read_json(run_json_path).get("metadata", {}) or {}
+    method = str(metadata.get("transcription_provider") or metadata.get("provider") or "")
+    result = _read_run_artifacts(run_dir)
+    result["method"] = method
+    result["provider_order_effective"] = list(provider_order)
+    result["cache"] = {
+        "hit": True,
+        "run_dir": str(run_dir),
+        "age_s": round(_age_seconds(run_json_path), 3),
+        "ttl_hours": cache_ttl_hours,
+    }
+    return result
 
 
 def _metadata_matches_options(
