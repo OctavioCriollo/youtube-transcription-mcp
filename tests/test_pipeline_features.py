@@ -88,7 +88,7 @@ def test_cached_completed_url_result_is_returned(tmp_path):
     from transcription_v4.storage import item_id_for_url
 
     url = "https://youtu.be/example"
-    run_dir = tmp_path / "v4-storage" / "items" / item_id_for_url(url) / "runs" / "run_cached"
+    run_dir = tmp_path / "storage" / "items" / item_id_for_url(url) / "runs" / "run_cached"
     run_dir.mkdir(parents=True)
     for name in (
         "transcript-timestamps.txt",
@@ -140,3 +140,4 @@ def test_cached_completed_url_result_is_returned(tmp_path):
     assert result["transcript"] == "hola cache"
     assert result["method"] == "groq"
     assert result["cache"]["hit"] is True
+    assert result["provider_order_effective"] == ["groq", "elevenlabs"]

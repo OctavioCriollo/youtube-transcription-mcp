@@ -39,15 +39,6 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             str | None,
             Field(description="Optional ISO 639-1 language code. Omit for auto-detect."),
         ] = None,
-        provider_order: Annotated[
-            str | None,
-            Field(
-                description=(
-                    "Optional comma-separated providers. Default: groq,elevenlabs,subtitles. "
-                    "Use local only when faster-whisper is installed and local CPU/GPU work is desired."
-                )
-            ),
-        ] = None,
         diarize: Annotated[
             bool,
             Field(description="Request speaker diarization. Currently supported by ElevenLabs only."),
@@ -61,12 +52,16 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
 
         Use for short videos or when a blocking call is acceptable. For long
         videos, prefer `start_youtube_transcription` plus status polling.
+
+        The provider order is decided by the server (default Groq -> ElevenLabs ->
+        YouTube captions); it is not a client option. The response reports the
+        order actually used in `provider_order_effective`.
         """
         return transcribe_youtube_sync(
             url=url,
             language=language,
             workspace_dir=config.workspace_dir,
-            provider_order=provider_order,
+            provider_order=config.youtube_provider_order,
             diarize=diarize,
             num_speakers=num_speakers,
             ytdlp_cookies_file=config.ytdlp_cookies_file,
@@ -84,10 +79,6 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             str | None,
             Field(description="Optional ISO 639-1 language code. Omit for auto-detect."),
         ] = None,
-        provider_order: Annotated[
-            str | None,
-            Field(description="Optional comma-separated providers. Default: groq,elevenlabs."),
-        ] = None,
         diarize: Annotated[
             bool,
             Field(description="Request speaker diarization. Currently supported by ElevenLabs only."),
@@ -100,13 +91,14 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
         """Synchronously transcribe a public media URL.
 
         This is not the YouTube captions fallback path; it uses audio providers
-        only. Prefer the async tool for long URLs.
+        only. Prefer the async tool for long URLs. Provider order is server-side;
+        see `provider_order_effective` in the response.
         """
         return transcribe_media_url_sync(
             url=url,
             language=language,
             workspace_dir=config.workspace_dir,
-            provider_order=provider_order,
+            provider_order=config.media_provider_order,
             diarize=diarize,
             num_speakers=num_speakers,
             ytdlp_cookies_file=config.ytdlp_cookies_file,
@@ -124,10 +116,6 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             str | None,
             Field(description="Optional ISO 639-1 language code. Omit for auto-detect."),
         ] = None,
-        provider_order: Annotated[
-            str | None,
-            Field(description="Optional comma-separated providers. Default: groq,elevenlabs."),
-        ] = None,
         diarize: Annotated[
             bool,
             Field(description="Request speaker diarization. Currently supported by ElevenLabs only."),
@@ -137,12 +125,15 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             Field(description="Optional expected number of speakers for diarization."),
         ] = None,
     ) -> dict[str, Any]:
-        """Synchronously transcribe a local file visible to the MCP host."""
+        """Synchronously transcribe a local file visible to the MCP host.
+
+        Provider order is server-side; see `provider_order_effective` in the response.
+        """
         return transcribe_file_sync(
             file_path=Path(file_path),
             language=language,
             workspace_dir=config.workspace_dir,
-            provider_order=provider_order,
+            provider_order=config.file_provider_order,
             diarize=diarize,
             num_speakers=num_speakers,
             cache_ttl_hours=config.cache_ttl_hours,
@@ -158,10 +149,6 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             str | None,
             Field(description="Optional ISO 639-1 language code. Omit for auto-detect."),
         ] = None,
-        provider_order: Annotated[
-            str | None,
-            Field(description="Optional comma-separated providers. Default: groq,elevenlabs,subtitles."),
-        ] = None,
         diarize: Annotated[
             bool,
             Field(description="Request speaker diarization. Currently supported by ElevenLabs only."),
@@ -175,13 +162,14 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
 
         Agent workflow: show user_visible_message, keep run_id, and follow
         recommended_next_tool plus recommended_poll_seconds from the response.
+        Provider order is server-side; the result reports `provider_order_effective`.
         """
         return start_transcription_job(
             source=url,
             source_type="youtube",
             language=language,
             workspace_dir=config.workspace_dir,
-            provider_order=provider_order,
+            provider_order=config.youtube_provider_order,
             diarize=diarize,
             num_speakers=num_speakers,
             ytdlp_cookies_file=config.ytdlp_cookies_file,
@@ -201,10 +189,6 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             str | None,
             Field(description="Optional ISO 639-1 language code. Omit for auto-detect."),
         ] = None,
-        provider_order: Annotated[
-            str | None,
-            Field(description="Optional comma-separated providers. Default: groq,elevenlabs."),
-        ] = None,
         diarize: Annotated[
             bool,
             Field(description="Request speaker diarization. Currently supported by ElevenLabs only."),
@@ -218,13 +202,14 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
 
         Agent workflow: show user_visible_message, keep run_id, and follow
         recommended_next_tool plus recommended_poll_seconds from the response.
+        Provider order is server-side; the result reports `provider_order_effective`.
         """
         return start_transcription_job(
             source=url,
             source_type="media_url",
             language=language,
             workspace_dir=config.workspace_dir,
-            provider_order=provider_order,
+            provider_order=config.media_provider_order,
             diarize=diarize,
             num_speakers=num_speakers,
             ytdlp_cookies_file=config.ytdlp_cookies_file,
@@ -244,10 +229,6 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             str | None,
             Field(description="Optional ISO 639-1 language code. Omit for auto-detect."),
         ] = None,
-        provider_order: Annotated[
-            str | None,
-            Field(description="Optional comma-separated providers. Default: groq,elevenlabs."),
-        ] = None,
         diarize: Annotated[
             bool,
             Field(description="Request speaker diarization. Currently supported by ElevenLabs only."),
@@ -261,13 +242,14 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
 
         Agent workflow: show user_visible_message, keep run_id, and follow
         recommended_next_tool plus recommended_poll_seconds from the response.
+        Provider order is server-side; the result reports `provider_order_effective`.
         """
         return start_transcription_job(
             source=file_path,
             source_type="file",
             language=language,
             workspace_dir=config.workspace_dir,
-            provider_order=provider_order,
+            provider_order=config.file_provider_order,
             diarize=diarize,
             num_speakers=num_speakers,
             cache_ttl_hours=config.cache_ttl_hours,

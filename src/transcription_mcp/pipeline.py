@@ -21,6 +21,7 @@ from transcription_v4.providers import ELEVENLABS_PROVIDER, GROQ_PROVIDER, LOCAL
 from transcription_v4.storage import item_id_for_file, item_id_for_url
 from transcription_v4.youtube import YtDlpYoutubeDownloader
 
+from transcription_mcp.config import STORAGE_DIR_NAME
 from transcription_mcp.youtube_subtitles import (
     NoSubtitlesAvailable,
     fetch_subtitles_transcript,
@@ -204,7 +205,7 @@ def transcribe_file_sync(
         try:
             run_dir = v4_transcribe_file(
                 path,
-                storage_dir=workspace_dir / "v4-storage",
+                storage_dir=workspace_dir / STORAGE_DIR_NAME,
                 provider=provider,
                 language=language,
                 diarize=diarize if provider == ELEVENLABS_PROVIDER else False,
@@ -227,6 +228,7 @@ def transcribe_file_sync(
             run_dir=run_dir,
             method=provider,
             failed_attempts=failed_attempts,
+            provider_order=providers,
             status_callback=status_callback,
         )
 
@@ -292,6 +294,7 @@ def _transcribe_url_chain(
                 url=url,
                 language=language,
                 failed_attempts=failed_attempts,
+                provider_order=providers,
                 status_callback=status_callback,
             )
             if result is not None:
@@ -312,7 +315,7 @@ def _transcribe_url_chain(
         try:
             run_dir = v4_transcribe_youtube(
                 url,
-                storage_dir=workspace_dir / "v4-storage",
+                storage_dir=workspace_dir / STORAGE_DIR_NAME,
                 provider=provider,
                 language=language,
                 diarize=diarize if provider == ELEVENLABS_PROVIDER else False,
@@ -336,6 +339,7 @@ def _transcribe_url_chain(
             run_dir=run_dir,
             method=provider,
             failed_attempts=failed_attempts,
+            provider_order=providers,
             status_callback=status_callback,
         )
 
@@ -347,6 +351,7 @@ def _try_subtitles_fallback(
     url: str,
     language: str | None,
     failed_attempts: dict[str, str],
+    provider_order: tuple[str, ...],
     status_callback: StatusCallback | None,
 ) -> dict[str, Any] | None:
     _emit_status(
@@ -371,6 +376,7 @@ def _try_subtitles_fallback(
 
     result["failed_attempts"] = failed_attempts
     result["method"] = SUBTITLES_PROVIDER
+    result["provider_order_effective"] = list(provider_order)
     result["cache"] = {"hit": False}
     _emit_status(
         status_callback,
@@ -387,10 +393,12 @@ def _successful_result(
     run_dir: Path,
     method: str,
     failed_attempts: dict[str, str],
+    provider_order: tuple[str, ...],
     status_callback: StatusCallback | None,
 ) -> dict[str, Any]:
     result = _read_run_artifacts(run_dir)
     result["method"] = method
+    result["provider_order_effective"] = list(provider_order)
     result["cache"] = {"hit": False}
     if failed_attempts:
         result["failed_attempts"] = failed_attempts
@@ -425,7 +433,7 @@ def _read_cached_url_result(
 ) -> dict[str, Any] | None:
     if cache_ttl_hours is None:
         return None
-    runs_dir = workspace_dir / "v4-storage" / "items" / item_id_for_url(url) / "runs"
+    runs_dir = workspace_dir / STORAGE_DIR_NAME / "items" / item_id_for_url(url) / "runs"
     return _read_cached_result_from_runs(
         runs_dir=runs_dir,
         provider_order=provider_order,
@@ -450,7 +458,7 @@ def _read_cached_file_result(
 ) -> dict[str, Any] | None:
     if cache_ttl_hours is None:
         return None
-    runs_dir = workspace_dir / "v4-storage" / "items" / item_id_for_file(path) / "runs"
+    runs_dir = workspace_dir / STORAGE_DIR_NAME / "items" / item_id_for_file(path) / "runs"
     return _read_cached_result_from_runs(
         runs_dir=runs_dir,
         provider_order=provider_order,
@@ -507,6 +515,7 @@ def _read_cached_result_from_runs(
             continue
         result = _read_run_artifacts(run_dir)
         result["method"] = method
+        result["provider_order_effective"] = list(provider_order)
         result["cache"] = {
             "hit": True,
             "run_dir": str(run_dir),

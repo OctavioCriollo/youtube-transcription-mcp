@@ -226,9 +226,14 @@ Common optional parameters:
 | Parameter        | Type           | Description                                                        |
 | ---------------- | -------------- | ------------------------------------------------------------------ |
 | `language`       | string \| null | ISO 639-1 code (`es`, `en`, `pt`...). Omit for auto-detect.        |
-| `provider_order` | string \| null | Comma-separated providers, e.g. `groq,elevenlabs` or `local,groq`. |
 | `diarize`        | bool           | Speaker diarization. Currently supported by ElevenLabs only.       |
 | `num_speakers`   | int \| null    | Optional expected speaker count for diarization.                   |
+
+> **Provider order is server policy, not a tool argument.** The public tools do
+> **not** accept `provider_order`; the order is fixed by the server (defaults:
+> YouTube `groq,elevenlabs,subtitles`; media/file `groq,elevenlabs`) and can be
+> overridden per source type via `MCP_*_PROVIDER_ORDER` env vars. Every response
+> reports the order actually used in `provider_order_effective`.
 
 ### Response shape
 
@@ -281,6 +286,10 @@ a missing key simply skips that level.
 | `TRANSCRIPTION_JOB_STALE_SECONDS` | `180`               | Seconds without a heartbeat before a running job is marked `stale_failed` (frees the concurrency slot). `0` disables. |
 | `TRANSCRIPTION_JOB_TIMEOUT_SECONDS` | `3600`            | Hard ceiling in seconds for a single job. `0` disables.     |
 | `OPENCLAW_WORKSPACE_DIR` | —                            | How the host (OpenClaw gateway) sees this MCP's workspace via its read-only mount. Used only to report `bundle_path_for_openclaw`; the MCP never reads/writes this path. |
+| `MCP_YOUTUBE_PROVIDER_ORDER` | `groq,elevenlabs,subtitles` | Server-owned provider order for YouTube. Clients cannot override it. |
+| `MCP_MEDIA_PROVIDER_ORDER` | `groq,elevenlabs`            | Server-owned provider order for media URLs.                 |
+| `MCP_FILE_PROVIDER_ORDER` | `groq,elevenlabs`             | Server-owned provider order for local files.                |
+| `MCP_LOCK_PROVIDER_ORDER` | `true`                        | Ignore any client-supplied provider override (e.g. from a debug tool) in favor of the server order. |
 
 > With **no** API keys set, only the free YouTube-captions level is available.
 
@@ -342,7 +351,7 @@ returns:
 | `sha256`, `size_bytes`, `included_artifacts`, `expires_at` | Integrity + contents + TTL. |
 
 The bundle is **temporary and regenerable** — the source of truth stays in
-`v4-storage`; it can be cleaned by TTL without data loss. Path rebasing uses
+`storage`; it can be cleaned by TTL without data loss. Path rebasing uses
 `WORKSPACE_DIR` (MCP side) and `OPENCLAW_WORKSPACE_DIR` (host side). See
 [`docs/deploy.md`](docs/deploy.md) for the full OpenClaw deployment.
 

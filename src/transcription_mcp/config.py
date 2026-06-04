@@ -15,6 +15,11 @@ from pathlib import Path
 VALID_TRANSPORTS = {"stdio", "streamable-http"}
 APP_DIR_NAME = "transcription-mcp"
 
+# Subdirectory (under WORKSPACE_DIR) that holds persistent transcription runs.
+# Neutral name on purpose (the old "v4-storage" leaked the vendored engine
+# version). It MUST stay under WORKSPACE_DIR so bundle path rebasing works.
+STORAGE_DIR_NAME = "storage"
+
 
 class ConfigError(RuntimeError):
     """Raised at startup when configuration is invalid."""
@@ -71,6 +76,15 @@ class Config:
     # to report bundle_path_for_openclaw to the agent; the MCP itself never
     # reads/writes that path. Example: /home/node/.openclaw/mcp-workspace/transcription-mcp
     openclaw_workspace_dir: str | None
+    # Provider order policy is OWNED BY THE SERVER, not the client. These are the
+    # effective orders per source type; None means "use the engine default". The
+    # public tools do NOT expose provider_order — only an (optional) debug tool may.
+    youtube_provider_order: str | None
+    media_provider_order: str | None
+    file_provider_order: str | None
+    # When True, any client-supplied provider override (e.g. from a debug tool) is
+    # ignored in favor of the server order. Public tools never send one.
+    lock_provider_order: bool
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -129,14 +143,18 @@ class Config:
                 "TRANSCRIPTION_JOB_TIMEOUT_SECONDS", default=3600.0
             ),
             openclaw_workspace_dir=_optional_string("OPENCLAW_WORKSPACE_DIR"),
+            youtube_provider_order=_optional_string("MCP_YOUTUBE_PROVIDER_ORDER"),
+            media_provider_order=_optional_string("MCP_MEDIA_PROVIDER_ORDER"),
+            file_provider_order=_optional_string("MCP_FILE_PROVIDER_ORDER"),
+            lock_provider_order=_bool_env("MCP_LOCK_PROVIDER_ORDER", default=True),
         )
 
     @property
-    def v4_storage_dir(self) -> Path:
-        return self.workspace_dir / "v4-storage"
+    def storage_dir(self) -> Path:
+        return self.workspace_dir / STORAGE_DIR_NAME
 
     def ensure_directories(self) -> None:
-        self.v4_storage_dir.mkdir(parents=True, exist_ok=True)
+        self.storage_dir.mkdir(parents=True, exist_ok=True)
         (self.workspace_dir / "mcp-jobs").mkdir(parents=True, exist_ok=True)
 
 
@@ -166,6 +184,13 @@ def _optional_float_env(name: str, *, default: float | None) -> float | None:
     if parsed <= 0:
         return None
     return parsed
+
+
+def _bool_env(name: str, *, default: bool) -> bool:
+    value = _optional_string(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _int_env(name: str, *, default: int, minimum: int) -> int:

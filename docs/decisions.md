@@ -292,8 +292,8 @@ create data outside the user's normal application area.
 
 The MCP layer exposes production features without changing the default path:
 
-- Completed v4 runs are treated as the cache. The MCP searches completed runs
-  in `v4-storage`, validates provider/order/language/diarization criteria, and
+- Completed runs are treated as the cache. The MCP searches completed runs
+  in `storage`, validates provider/order/language/diarization criteria, and
   returns a cache hit only while `MCP_CACHE_TTL_HOURS` is fresh.
 - Result payloads expose an artifact manifest instead of embedding every large
   artifact. `get_transcription_artifact` fetches a named text artifact on
@@ -304,8 +304,10 @@ The MCP layer exposes production features without changing the default path:
 - Diarization is a normal tool option but is routed only to ElevenLabs. Groq and
   local providers are skipped for diarized requests instead of failing the whole
   chain.
-- `local` is supported only through explicit `provider_order`; it is not part of
-  the default chain because CPU/GPU runtime is an operational choice.
+- `local` is not part of the default chain because CPU/GPU runtime is an
+  operational choice. Since `provider_order` is no longer a public tool argument
+  (see "Provider order is server policy" below), `local` is reachable only via
+  server config (`MCP_*_PROVIDER_ORDER`) or a debug tool.
 - Public media URLs and local files use separate tools from YouTube. This keeps
   YouTube captions fallback scoped to YouTube and avoids ambiguous source
   semantics.
@@ -359,9 +361,30 @@ write) on the **shared** volume and returns two paths: `bundle_path_for_mcp` (MC
 and `bundle_path_for_openclaw` (the same file rebased to the host's read-only mount,
 computed from `WORKSPACE_DIR` and `OPENCLAW_WORKSPACE_DIR`). The host sends the second.
 
-The bundle is temporary and regenerable; the source of truth stays in `v4-storage`, so
+The bundle is temporary and regenerable; the source of truth stays in `storage`, so
 TTL cleanup of bundles loses no data. This keeps the MCP a content provider, not a
 delivery/transport service — consistent with "the agent IS the publisher".
+
+## Provider order is server policy; storage dir renamed to `storage`
+
+2026-06-03 (development phase, nothing in production yet, so no migration needed).
+
+**Provider order owned by the server.** `provider_order` was a public argument on all
+six transcribe/start tools, letting a client weaken the contract (e.g. forcing
+`subtitles` before `groq`). It is now **removed from the public tool schema**. The order
+is server policy: defaults stay in `pipeline.py` (YouTube `groq,elevenlabs,subtitles`;
+media/file `groq,elevenlabs`) and are overridable per source type via
+`MCP_YOUTUBE_PROVIDER_ORDER` / `MCP_MEDIA_PROVIDER_ORDER` / `MCP_FILE_PROVIDER_ORDER`.
+`MCP_LOCK_PROVIDER_ORDER` (default true) ignores any future debug-tool override. Every
+result now reports `provider_order_effective` so the chosen order is auditable. A future
+debug tool (registered only behind an env flag) may re-expose an override for testing.
+
+**Storage dir renamed `v4-storage` -> `storage`.** The old name leaked the vendored
+engine version into the runtime layout, bundle paths and docs. A single constant
+(`STORAGE_DIR_NAME` in `config.py`) is the source of truth; the dir stays **under
+`WORKSPACE_DIR`** (required for bundle path rebasing). Done now, in development, because
+renaming is free with no production data to migrate — doing it later would have needed a
+legacy-read fallback and a migrator.
 
 ## Job liveness: heartbeat, `stale_failed`, and `/health`
 

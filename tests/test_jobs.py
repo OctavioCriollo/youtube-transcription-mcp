@@ -78,7 +78,7 @@ def test_get_transcription_job_result_returns_completed_payload(tmp_path):
 def test_get_transcription_job_artifact_returns_named_content(tmp_path):
     from transcription_mcp import jobs
 
-    run_dir = tmp_path / "v4-storage" / "items" / "url-test" / "runs" / "run_1"
+    run_dir = tmp_path / "storage" / "items" / "url-test" / "runs" / "run_1"
     run_dir.mkdir(parents=True)
     artifact_path = run_dir / "subtitles.srt"
     artifact_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nhola", encoding="utf-8")
@@ -127,7 +127,7 @@ def test_get_transcription_job_artifact_returns_named_content(tmp_path):
 def test_get_transcription_job_artifact_guides_unknown_artifact(tmp_path):
     from transcription_mcp import jobs
 
-    run_dir = tmp_path / "v4-storage" / "items" / "url-test" / "runs" / "run_1"
+    run_dir = tmp_path / "storage" / "items" / "url-test" / "runs" / "run_1"
     run_dir.mkdir(parents=True)
     artifact_path = run_dir / "subtitles.srt"
     artifact_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nhola", encoding="utf-8")
@@ -197,7 +197,7 @@ def test_cancel_transcription_job_marks_job_canceled(monkeypatch, tmp_path):
 def test_create_bundle_packages_artifacts_and_rebases_path(tmp_path):
     from transcription_mcp.bundle import create_bundle
 
-    run = tmp_path / "v4-storage" / "items" / "url-x" / "runs" / "run_1"
+    run = tmp_path / "storage" / "items" / "url-x" / "runs" / "run_1"
     run.mkdir(parents=True)
     (run / "transcript.txt").write_text("hola", encoding="utf-8")
     (run / "subtitles.srt").write_text("1\n", encoding="utf-8")

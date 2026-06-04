@@ -2,7 +2,7 @@
 
 The bundle is a convenience artifact for delivery (e.g. OpenClaw sending a file
 to the user). It is NOT the source of truth — that remains the run_dir in
-v4-storage. The bundle is regenerable and may be cleaned by TTL.
+storage. The bundle is regenerable and may be cleaned by TTL.
 
 The zip is written inside the run itself:
     <run_dir>/exports/transcription_bundle.zip
@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 # Artifacts included in the bundle if present in the run_dir. Source of truth
-# stays in v4-storage; this is just a packaged copy for delivery.
+# stays in storage; this is just a packaged copy for delivery.
 BUNDLE_ARTIFACTS = (
     "transcript.txt",
     "transcript-timestamps.txt",
@@ -94,7 +94,7 @@ def create_bundle(
         "expires_at": expires_at,
         "run_dir": str(run_dir),
         "note": (
-            "Temporary, regenerable bundle. Source of truth stays in v4-storage. "
+            "Temporary, regenerable bundle. Source of truth stays in storage. "
             "Send bundle_path_for_openclaw as the file to the user."
         ),
     }

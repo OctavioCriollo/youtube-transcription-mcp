@@ -15,6 +15,8 @@ from typing import Any
 from transcription_v4.status import inspect_run
 from transcription_v4.storage import item_id_for_url
 
+from transcription_mcp.config import STORAGE_DIR_NAME
+
 JOB_SCHEMA_VERSION = "mcp-transcription-job-v1"
 # stale_failed is terminal: a job that hung (no heartbeat) is moved here so it
 # stops counting against max_concurrent_jobs.
@@ -397,7 +399,7 @@ def latest_v4_status(
         return None
     else:
         item_id = item_id_for_url(source)
-    runs_dir = Path(workspace_dir) / "v4-storage" / "items" / item_id / "runs"
+    runs_dir = Path(workspace_dir) / STORAGE_DIR_NAME / "items" / item_id / "runs"
     if not runs_dir.is_dir():
         return None
     candidates = sorted(
@@ -571,7 +573,6 @@ def _public_job(job_dir: Path, job: dict[str, Any]) -> dict[str, Any]:
         "source_type",
         "url",
         "language",
-        "provider_order",
         "diarize",
         "num_speakers",
         "status",

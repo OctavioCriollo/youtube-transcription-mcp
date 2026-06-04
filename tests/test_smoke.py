@@ -98,7 +98,7 @@ def test_server_boots(monkeypatch, tmp_path):
     monkeypatch.setenv("WORKSPACE_DIR", str(tmp_path))
     server = create_server()
     assert server is not None
-    assert (tmp_path / "v4-storage").is_dir()
+    assert (tmp_path / "storage").is_dir()
     assert (tmp_path / "mcp-jobs").is_dir()
 
 
