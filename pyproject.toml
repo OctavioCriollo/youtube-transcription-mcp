@@ -18,11 +18,23 @@ dependencies = [
     "yt-dlp>=2026.3.17",
     "pydantic>=2.13.4",
     "youtube-transcript-api>=1.2.4,<2",
+    # Imported directly by server.py (the /health route uses starlette Request /
+    # JSONResponse). It also arrives transitively via `mcp`, but is declared here
+    # so the contract does not depend on a transitive dependency staying present.
+    "starlette>=1.2",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=9.0.3",
+    "ruff>=0.15",
+]
+# Local (offline) transcription provider, opt-in: `pip install -e .[local]`.
+# Heavy and platform-specific, so it is NOT in the base dependencies.
+# `torch` is intentionally not pinned here: the correct wheel depends on the
+# platform / CUDA build, so install it per-platform (CPU or GPU) alongside this.
+local = [
+    "faster-whisper>=1.2",
 ]
 
 [project.scripts]
