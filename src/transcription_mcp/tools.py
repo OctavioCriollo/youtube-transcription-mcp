@@ -20,6 +20,7 @@ from transcription_mcp.jobs import (
     get_transcription_job_result,
     get_transcription_job_status,
     start_transcription_job,
+    watch_transcription_job,
 )
 from transcription_mcp.pipeline import (
     transcribe_file_sync,
@@ -273,6 +274,44 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
         return get_transcription_job_status(
             run_id=run_id,
             workspace_dir=config.workspace_dir,
+        )
+
+    @mcp.tool()
+    async def watch_transcription(
+        run_id: Annotated[
+            str,
+            Field(description="run_id returned by a start_* transcription tool."),
+        ],
+        since_revision: Annotated[
+            int | None,
+            Field(
+                description=(
+                    "The last `revision` you saw. The call returns as soon as the job's "
+                    "revision changes. Omit (null) on the first call."
+                )
+            ),
+        ] = None,
+        timeout_seconds: Annotated[
+            float,
+            Field(description="Max seconds to wait for a change before returning (capped at 30). Default 25."),
+        ] = 25.0,
+    ) -> dict[str, Any]:
+        """Long-poll for progress on a background transcription job.
+
+        Blocks until the job reaches a new stage/status (its `revision` changes) or
+        until `timeout_seconds`, then returns the current state with `changed`,
+        `revision` and `terminal`. Call it again with the returned `revision` as
+        `since_revision` to follow progress in a loop WITHOUT yielding the turn.
+        Returns immediately if the job is already terminal. Prefer this over
+        repeatedly calling get_transcription_status: after start_*, loop
+        watch_transcription and show the user each change until terminal, then call
+        get_transcription_result.
+        """
+        return await watch_transcription_job(
+            run_id=run_id,
+            workspace_dir=config.workspace_dir,
+            since_revision=since_revision,
+            timeout_seconds=timeout_seconds,
         )
 
     @mcp.tool()

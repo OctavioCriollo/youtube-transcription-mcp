@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -113,6 +114,7 @@ def start_transcription_job(
         "stage": "queued",
         "message": "Transcription job queued.",
         "progress": 0.0,
+        "revision": 0,
         "created_at": created_at,
         "updated_at": created_at,
         "result_available": False,
@@ -157,6 +159,51 @@ def get_transcription_job_status(
     job = _read_job(job_dir)
     job = _refresh_job_status(job_dir, job)
     return _public_job(job_dir, job)
+
+
+WATCH_MAX_TIMEOUT_SECONDS = 30.0
+WATCH_POLL_INTERVAL_SECONDS = 0.7
+
+
+async def watch_transcription_job(
+    *,
+    run_id: str,
+    workspace_dir: Path,
+    since_revision: int | None = None,
+    timeout_seconds: float = 25.0,
+) -> dict[str, Any]:
+    """Long-poll a job: block until its `revision` changes (a new stage/status) or
+    it is terminal, or until timeout, then return the same contract as
+    get_transcription_job_status plus `changed` and `terminal`.
+
+    Async on purpose: it awaits between polls so it does not tie up a server thread
+    while waiting. The agent calls it in a loop (passing the last `revision` as
+    `since_revision`) to follow progress without yielding its turn.
+    """
+    import anyio
+
+    try:
+        requested = float(timeout_seconds)
+    except (TypeError, ValueError):
+        requested = 25.0
+    timeout = max(1.0, min(requested, WATCH_MAX_TIMEOUT_SECONDS))
+    baseline = int(since_revision) if since_revision is not None else None
+    deadline = time.monotonic() + timeout
+
+    while True:
+        status = get_transcription_job_status(run_id=run_id, workspace_dir=workspace_dir)
+        revision = int(status.get("revision") or 0)
+        terminal = str(status.get("status")) in TERMINAL_STATUSES
+        changed = baseline is None or revision != baseline
+        if changed or terminal or time.monotonic() >= deadline:
+            result = dict(status)
+            result["changed"] = bool(changed or terminal)
+            result["terminal"] = terminal
+            if not terminal:
+                # Keep the agent in the watch loop instead of yielding.
+                result["recommended_next_tool"] = "watch_transcription"
+            return result
+        await anyio.sleep(WATCH_POLL_INTERVAL_SECONDS)
 
 
 def get_transcription_job_result(
@@ -381,7 +428,15 @@ def get_job_dir(*, workspace_dir: Path, run_id: str) -> Path:
 def update_job_status(job_dir: Path, **updates: Any) -> dict[str, Any]:
     job_path = Path(job_dir) / "job.json"
     job = read_json(job_path) if job_path.exists() else {}
+    prev_status = job.get("status")
+    prev_stage = job.get("stage")
     job.update({key: value for key, value in updates.items() if value is not None})
+    # Bump `revision` only on a milestone change (status or stage), NOT on every
+    # heartbeat write. watch_transcription wakes on revision changes, so this keeps
+    # it firing on real progress (stage transitions, terminal states) instead of
+    # every 2s heartbeat. progress/message still ride along in the snapshot.
+    if job.get("status") != prev_status or job.get("stage") != prev_stage:
+        job["revision"] = int(job.get("revision") or 0) + 1
     job["updated_at"] = _now_iso()
     write_json_atomic(job_path, job)
     return job
@@ -579,6 +634,7 @@ def _public_job(job_dir: Path, job: dict[str, Any]) -> dict[str, Any]:
         "stage",
         "message",
         "progress",
+        "revision",
         "created_at",
         "updated_at",
         "started_at",

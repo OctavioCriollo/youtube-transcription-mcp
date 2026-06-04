@@ -181,7 +181,8 @@ Asynchronous production flow:
 | `start_youtube_transcription`   | Starts a background job and returns `run_id` immediately.              |
 | `start_media_url_transcription` | Starts a background job for a public media URL.                        |
 | `start_file_transcription`      | Starts a background job for a local file visible to the MCP host.      |
-| `get_transcription_status`      | Polls persistent status, stage, progress, logs, and v4 chunk progress. |
+| `get_transcription_status`      | Instant snapshot of status, stage, progress, `revision`, logs.         |
+| `watch_transcription`           | **Long-poll**: blocks until `revision` changes (new stage/status) or timeout, so the agent follows progress in a loop without yielding. |
 | `get_transcription_result`      | Returns the final transcript once `status == "completed"`.             |
 | `get_transcription_artifact`    | Returns a named text artifact such as `subtitles_srt` or `audit_txt`.  |
 | `cancel_transcription`          | Best-effort cancellation of the worker process and its children.        |
@@ -212,12 +213,21 @@ Async job responses include a small guidance contract for LLM clients:
 The server also exposes the prompt `transcribe_with_progress`. MCP clients that
 support prompts can use it as a built-in workflow for long transcriptions:
 
-1. call a `start_*_transcription` tool;
+1. call a `start_*_transcription` tool and keep `run_id` + `revision`;
 2. show `user_visible_message`;
-3. poll `get_transcription_status` using `recommended_poll_seconds`;
-4. call `get_transcription_result` when the job completes;
+3. loop `watch_transcription(run_id, since_revision, timeout_seconds)` — it blocks
+   until the job changes or times out; show each change to the user. Do **not**
+   yield the turn right after `start_*`. (`get_transcription_status` remains as an
+   instant-snapshot fallback.)
+4. call `get_transcription_result` when `terminal` is true and status is completed;
 5. fetch artifacts only when the user asks for subtitles, timestamps, audit
    data, or another listed artifact.
+
+> Why long-poll instead of push: MCP `notifications/progress` only works inside a
+> live request with a `progressToken`; it can't wake an agent that already yielded,
+> and generic push isn't guaranteed across MCP clients. A durable `revision` + a
+> short long-poll (`watch_transcription`) is portable and keeps the agent showing
+> progress in the same turn.
 
 This guidance is client-readable metadata. It improves behavior for LLM agents,
 but the MCP cannot force a client UI to display progress if that client ignores

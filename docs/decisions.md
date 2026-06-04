@@ -459,6 +459,33 @@ Two changes in `_read_cached_result_from_runs`, both with **no new metadata**
 Net effect: the cache only saves work when a real-STT result already exists, and
 never serves the degraded path when a higher-priority provider could be retried.
 
+## Observable progress via long-poll, not push (corrective 13)
+
+2026-06-04. Problem: after `start_*` returns a `run_id`, an agent that yields sees no
+progress until the user sends another message — the job runs but progress is trapped in
+the filesystem. MCP `notifications/progress` does not solve this: it is tied to a live
+request with a `progressToken`, so it cannot wake an agent that already yielded, and
+generic push is not guaranteed across MCP clients.
+
+Decision: expose progress as **durable, observable state** plus a short **long-poll**:
+
+- `job.json` carries a monotonic `revision` that bumps only on a milestone change
+  (status or stage), NOT on the 2s heartbeat. So watchers wake on real progress, not
+  every tick. `progress`/`message` still ride along in the snapshot.
+- `watch_transcription(run_id, since_revision, timeout_seconds)` is an **async** tool
+  that blocks until `revision` changes or the job is terminal or `timeout_seconds`
+  (capped at 30, default 25, kept under the client's request timeout), then returns the
+  same contract as `get_transcription_status` plus `changed` and `terminal`. Async
+  (`await anyio.sleep`) so it does not tie up a server thread while waiting.
+- The agent loops `watch_transcription` (passing the last `revision`) and shows each
+  change, instead of yielding right after `start_*`. `get_transcription_status` stays as
+  the instant-snapshot fallback.
+
+`notifications/progress` may still be added later as a best-effort enhancement for
+clients that send a `progressToken`, but the reliable contract is the durable
+`revision` + long-poll. The agent-side rule ("loop watch_transcription, do not yield")
+is an agent instruction (configured separately), not part of the MCP.
+
 ## Anti-patterns to watch for in future iterations
 
 Three failure modes to recognise if they reappear:
