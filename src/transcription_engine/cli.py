@@ -4,20 +4,20 @@ import argparse
 import json
 from pathlib import Path
 
-from transcription_v4 import __version__
-from transcription_v4.audit import audit_run, write_audit_files
-from transcription_v4.clean import clean_incomplete_runs, clean_run, render_clean_text
-from transcription_v4.pipeline import DEFAULT_PROFILE, MODEL_PROFILES, transcribe_file
-from transcription_v4.pipeline import transcribe_youtube
-from transcription_v4.providers import ELEVENLABS_PROVIDER, GROQ_PROVIDER, LOCAL_PROVIDER
-from transcription_v4.plan import plan_file, render_plan_json, render_plan_text
-from transcription_v4.repair import regenerate_run_outputs
-from transcription_v4.status import inspect_run, render_status_text
+from transcription_engine import __version__
+from transcription_engine.audit import audit_run, write_audit_files
+from transcription_engine.clean import clean_incomplete_runs, clean_run, render_clean_text
+from transcription_engine.pipeline import DEFAULT_PROFILE, MODEL_PROFILES, transcribe_file
+from transcription_engine.pipeline import transcribe_youtube
+from transcription_engine.providers import ELEVENLABS_PROVIDER, GROQ_PROVIDER, LOCAL_PROVIDER
+from transcription_engine.plan import plan_file, render_plan_json, render_plan_text
+from transcription_engine.repair import regenerate_run_outputs
+from transcription_engine.status import inspect_run, render_status_text
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="transcribe-v4")
-    parser.add_argument("--version", action="version", version=f"transcribe-v4 {__version__}")
+    parser = argparse.ArgumentParser(prog="transcription-engine")
+    parser.add_argument("--version", action="version", version=f"transcription-engine {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     file_parser = sub.add_parser("file", help="Transcribe a local audio/video file.")

@@ -7,15 +7,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from transcription_v4.audit import build_audit, render_audit_text
-from transcription_v4.diarization import (
+from transcription_engine.audit import build_audit, render_audit_text
+from transcription_engine.diarization import (
     build_speakers_report,
     render_diarized_txt,
     transcript_has_speakers,
 )
-from transcription_v4.models import CanonicalTranscript, SubtitleCue
-from transcription_v4.quality import QualityReport
-from transcription_v4.subtitles import (
+from transcription_engine.models import CanonicalTranscript, SubtitleCue
+from transcription_engine.quality import QualityReport
+from transcription_engine.subtitles import (
     render_srt,
     render_transcript_timestamps_txt,
     render_transcript_txt,

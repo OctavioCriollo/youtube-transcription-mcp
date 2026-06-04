@@ -13,17 +13,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from transcription_v4.pipeline import (
-    transcribe_file as v4_transcribe_file,
-    transcribe_youtube as v4_transcribe_youtube,
+from transcription_engine.pipeline import (
+    transcribe_file as engine_transcribe_file,
+    transcribe_youtube as engine_transcribe_youtube,
 )
-from transcription_v4.providers import ELEVENLABS_PROVIDER, GROQ_PROVIDER, LOCAL_PROVIDER
-from transcription_v4.storage import FilesystemStorage, item_id_for_file, item_id_for_url
-from transcription_v4.youtube import YtDlpYoutubeDownloader
-from transcription_v4.models import CanonicalTranscript, Segment, SubtitleCue
-from transcription_v4.quality import evaluate_quality
-from transcription_v4.subtitles import SubtitleConfig
-from transcription_v4.text import wrap_lines
+from transcription_engine.providers import ELEVENLABS_PROVIDER, GROQ_PROVIDER, LOCAL_PROVIDER
+from transcription_engine.storage import FilesystemStorage, item_id_for_file, item_id_for_url
+from transcription_engine.youtube import YtDlpYoutubeDownloader
+from transcription_engine.models import CanonicalTranscript, Segment, SubtitleCue
+from transcription_engine.quality import evaluate_quality
+from transcription_engine.subtitles import SubtitleConfig
+from transcription_engine.text import wrap_lines
 
 from transcription_mcp.config import STORAGE_DIR_NAME
 from transcription_mcp.youtube_subtitles import (
@@ -207,7 +207,7 @@ def transcribe_file_sync(
             failed_attempts=failed_attempts.copy() or None,
         )
         try:
-            run_dir = v4_transcribe_file(
+            run_dir = engine_transcribe_file(
                 path,
                 storage_dir=workspace_dir / STORAGE_DIR_NAME,
                 provider=provider,
@@ -318,7 +318,7 @@ def _transcribe_url_chain(
             failed_attempts=failed_attempts.copy() or None,
         )
         try:
-            run_dir = v4_transcribe_youtube(
+            run_dir = engine_transcribe_youtube(
                 url,
                 storage_dir=workspace_dir / STORAGE_DIR_NAME,
                 provider=provider,

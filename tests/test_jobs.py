@@ -40,6 +40,61 @@ def test_start_transcription_job_persists_request_and_spawns_worker(monkeypatch,
     assert calls[0][0][-3:] == ["-m", "transcription_mcp.worker", str(job_dir)]
 
 
+def test_engine_status_summary_uses_neutral_fields():
+    from transcription_mcp import jobs
+
+    report = {
+        "stage": "transcribing",
+        "run_dir": "/tmp/engine-run",
+        "chunking": {"expected_chunks": 4, "partials": 2},
+    }
+
+    summary = jobs.summarize_engine_status(report)
+
+    assert summary["stage"] == "engine_transcribing"
+    assert summary["message"] == "transcribing: 2/4 transcription chunk(s) completed."
+    assert summary["progress"] == 0.55
+    assert summary["engine_run_dir"] == "/tmp/engine-run"
+    assert summary["engine_status"] == report
+    assert "v4_run_dir" not in summary
+    assert "v4_status" not in summary
+
+
+def test_status_public_contract_exposes_engine_fields_only(monkeypatch, tmp_path):
+    from transcription_mcp import jobs
+
+    monkeypatch.setattr(jobs, "_is_pid_alive", lambda pid: True)
+    job_dir = tmp_path / "mcp-jobs" / "mcpjob_engine"
+    job_dir.mkdir(parents=True)
+    jobs.write_json_atomic(
+        job_dir / "job.json",
+        {
+            "schema_version": jobs.JOB_SCHEMA_VERSION,
+            "run_id": "mcpjob_engine",
+            "source": "https://youtu.be/example",
+            "source_type": "youtube",
+            "url": "https://youtu.be/example",
+            "status": "running",
+            "stage": "engine_transcribing",
+            "message": "running",
+            "worker_pid": 4321,
+            "engine_run_dir": "/tmp/engine-run",
+            "engine_status": {"stage": "transcribing"},
+        },
+    )
+
+    status = jobs.get_transcription_job_status(
+        run_id="mcpjob_engine",
+        workspace_dir=tmp_path,
+    )
+
+    assert status["stage"] == "engine_transcribing"
+    assert status["engine_run_dir"] == "/tmp/engine-run"
+    assert status["engine_status"] == {"stage": "transcribing"}
+    assert "v4_run_dir" not in status
+    assert "v4_status" not in status
+
+
 def test_get_transcription_job_result_returns_completed_payload(tmp_path):
     from transcription_mcp import jobs
 
@@ -178,7 +233,7 @@ def test_cancel_transcription_job_marks_job_canceled(monkeypatch, tmp_path):
             "run_id": "mcpjob_cancel",
             "url": "https://youtu.be/example",
             "status": "running",
-            "stage": "v4_transcribing",
+            "stage": "engine_transcribing",
             "message": "running",
             "worker_pid": 1234,
         },

@@ -5,15 +5,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from transcription_v4.audit import build_audit, render_audit_text
-from transcription_v4.diarization import (
+from transcription_engine.audit import build_audit, render_audit_text
+from transcription_engine.diarization import (
     build_speakers_report,
     render_diarized_txt,
     transcript_has_speakers,
 )
-from transcription_v4.models import CanonicalTranscript
-from transcription_v4.quality import evaluate_quality
-from transcription_v4.subtitles import (
+from transcription_engine.models import CanonicalTranscript
+from transcription_engine.quality import evaluate_quality
+from transcription_engine.subtitles import (
     SubtitleBuilder,
     SubtitleConfig,
     render_srt,

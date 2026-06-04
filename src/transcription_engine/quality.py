@@ -4,9 +4,9 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
-from transcription_v4.models import CanonicalTranscript, SubtitleCue
-from transcription_v4.subtitles import SubtitleConfig
-from transcription_v4.text import token_counter
+from transcription_engine.models import CanonicalTranscript, SubtitleCue
+from transcription_engine.subtitles import SubtitleConfig
+from transcription_engine.text import token_counter
 
 
 @dataclass(frozen=True)

@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from transcription_v4.chunking import ChunkInfo, plan_chunks
+from transcription_engine.chunking import ChunkInfo, plan_chunks
 
 MediaProgressCallback = Callable[[str], None]
 

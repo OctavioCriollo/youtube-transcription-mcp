@@ -8,10 +8,10 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from transcription_v4.models import CanonicalTranscript, SubtitleCue
-from transcription_v4.quality import QualityReport, evaluate_quality
-from transcription_v4.subtitles import SubtitleConfig
-from transcription_v4.text import token_counter, word_tokens
+from transcription_engine.models import CanonicalTranscript, SubtitleCue
+from transcription_engine.quality import QualityReport, evaluate_quality
+from transcription_engine.subtitles import SubtitleConfig
+from transcription_engine.text import token_counter, word_tokens
 
 
 _SRT_CUE_RE = re.compile(
@@ -174,7 +174,7 @@ def render_audit_text(report: dict[str, Any]) -> str:
     confidence = report["confidence"]
     unicode_report = report["suspicious_unicode"]
     lines = [
-        "Transcription v4 audit",
+        "Transcription engine audit",
         "",
         f"status: {summary['status']}",
         f"verdict: {summary['verdict']}",

@@ -53,8 +53,8 @@ hatch when the MCP needs to run on a different host than OpenClaw
 default is stdio. The HTTP transport is opt-in via env var.
 
 Consequence: anything written to stdout other than the MCP protocol
-corrupts the session. v4's `print()`-based progress logging is silenced
-by always passing `progress=False` to v4's pipeline. Operational
+corrupts the session. The engine's `print()`-based progress logging is silenced
+by always passing `progress=False` to the engine pipeline. Operational
 visibility uses Python `logging` to stderr instead.
 
 ## 3-level provider chain: Groq → ElevenLabs URL → CC
@@ -70,7 +70,7 @@ The pipeline tries three methods in order; first success wins:
    the YouTube URL directly to ElevenLabs. ElevenLabs downloads it
    on **their** infrastructure, so our host IP is irrelevant.
    Works from any cloud host. Higher quality than Groq Whisper
-   turbo. v4 already had this implemented and used it as the
+   turbo. The vendored engine already had this implemented and used it as the
    default for `transcribe_youtube` — we inherit that capability.
 
 3. **YouTube captions/CC** via `youtube-transcript-api` (free,
@@ -113,8 +113,8 @@ what happened and why.
 
 ## Import the engine, do not subprocess it
 
-`transcription_v4` is vendored under `src/transcription_v4/` and
-imported directly. The previous attempt invoked the `transcribe-v4`
+`transcription_engine` is vendored under `src/transcription_engine/` and
+imported directly. The previous attempt invoked the engine CLI
 CLI as a subprocess and parsed stdout to find the run directory.
 That:
 
@@ -124,12 +124,12 @@ That:
 - doubled the testing surface.
 
 Importing is simpler, faster, and gives the MCP access to all the
-structured information v4 produces.
+structured information the engine produces.
 
 ## No SQLite job store, no DDD layers, no `publish` tool
 
 The MCP SDK is the adapter layer. Underneath, one small pipeline
-module calls v4. There is no `application/`, `infrastructure/`,
+module calls the engine. There is no `application/`, `infrastructure/`,
 `adapters/`, `domain/` packaging — that surface only makes sense at
 scale.
 
@@ -154,11 +154,11 @@ A future iteration may add a background sweeper.
 - Fast: `whisper-large-v3-turbo` returns in under 60 seconds for short
   videos.
 - Free tier available; no GPU required on the host.
-- Returns word timestamps; v4's `GroqProvider` already normalises them.
-- The 25 MB upload limit is handled by v4's chunking + merge for free.
+- Returns word timestamps; the engine's `GroqProvider` already normalises them.
+- The 25 MB upload limit is handled by the engine's chunking + merge for free.
 
 When a need appears for local-only transcription (privacy) or larger
-direct uploads (ElevenLabs accepts 3 GB), the v4 abstraction already
+direct uploads (ElevenLabs accepts 3 GB), the engine abstraction already
 covers it — add a `provider` argument to the tool, dispatch.
 
 ## Corrective: Groq word/segment alignment
@@ -236,7 +236,7 @@ The production path uses a persistent job model:
 - `start_youtube_transcription` writes `mcp-jobs/<run_id>/request.json`,
   starts a separate Python worker process, and returns `run_id` immediately.
 - `get_transcription_status` reads `mcp-jobs/<run_id>/job.json` and, when
-  available, enriches it with v4 `run-state.json` / chunk progress.
+  available, enriches it with engine `run-state.json` / chunk progress.
 - `get_transcription_result` reads `result.json` only after completion.
 - `cancel_transcription` terminates the worker process tree on a best-effort
   basis and marks the job canceled.
@@ -319,7 +319,7 @@ The MCP layer exposes production features without changing the default path:
   YouTube captions fallback scoped to YouTube and avoids ambiguous source
   semantics.
 - Async workers enforce a simple host-level concurrency limit and clean old job
-  records. v4 transcript artifacts are not deleted by that job cleanup.
+  records. Engine transcript artifacts are not deleted by that job cleanup.
 
 ## Production deployment: containerized streamable-http (supersedes uvx side-car)
 
@@ -392,6 +392,13 @@ engine version into the runtime layout, bundle paths and docs. A single constant
 `WORKSPACE_DIR`** (required for bundle path rebasing). Done now, in development, because
 renaming is free with no production data to migrate — doing it later would have needed a
 legacy-read fallback and a migrator.
+
+**Engine package and progress fields use neutral names.** The vendored engine package is
+`src/transcription_engine/`, and runtime job progress no longer writes or returns
+`v4_run_dir`, `v4_status`, `latest_v4_status`, or `v4_*` stages. The MCP-owned contract
+uses `engine_run_dir`, `engine_status`, `latest_engine_status`, and `engine_*` stages.
+Because this is still development, old `mcp-jobs` data is disposable: delete/recreate
+jobs instead of carrying a legacy compatibility reader.
 
 ## Job liveness: heartbeat, `stale_failed`, and `/health`
 

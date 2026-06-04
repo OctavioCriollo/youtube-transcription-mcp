@@ -408,7 +408,7 @@ youtube-transcription-mcp/
 │   │   ├── pipeline.py               # 3-level fallback orchestration
 │   │   ├── youtube_subtitles.py      # captions via youtube-transcript-api
 │   │   └── config.py                 # env-var configuration
-│   └── transcription_v4/             # vendored transcription engine
+│   └── transcription_engine/             # vendored transcription engine
 │       ├── providers.py              # Groq + ElevenLabs (+ local) providers
 │       ├── pipeline.py               # download, chunk, merge, finalize
 │       ├── chunking.py               # split long audio, merge by absolute time
@@ -424,7 +424,7 @@ youtube-transcription-mcp/
 └── docker-compose.snippet.yml
 ```
 
-The MCP layer is deliberately thin: it imports the vendored `transcription_v4` engine
+The MCP layer is deliberately thin: it imports the vendored `transcription_engine` package
 directly (no subprocess), orchestrates the fallback chain, and returns a clean JSON object.
 See [`docs/decisions.md`](docs/decisions.md) for the full rationale.
 

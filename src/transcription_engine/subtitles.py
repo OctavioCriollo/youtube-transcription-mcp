@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
-from transcription_v4.models import CanonicalTranscript, Segment, SubtitleCue, Word
-from transcription_v4.text import smart_join, wrap_lines
+from transcription_engine.models import CanonicalTranscript, Segment, SubtitleCue, Word
+from transcription_engine.text import smart_join, wrap_lines
 
 
 class SubtitleGenerationError(RuntimeError):

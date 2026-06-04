@@ -85,7 +85,7 @@ def test_read_run_artifacts_returns_manifest_and_speakers(tmp_path):
 
 def test_cached_completed_url_result_is_returned(tmp_path):
     from transcription_mcp.pipeline import _read_cached_url_result
-    from transcription_v4.storage import item_id_for_url
+    from transcription_engine.storage import item_id_for_url
 
     url = "https://youtu.be/example"
     run_dir = tmp_path / "storage" / "items" / item_id_for_url(url) / "runs" / "run_cached"

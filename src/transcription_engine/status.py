@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from transcription_v4.chunking import plan_chunks
+from transcription_engine.chunking import plan_chunks
 
 
 FINAL_ARTIFACTS = (
@@ -148,7 +148,7 @@ def render_status_text(report: dict[str, Any]) -> str:
     timestamps = report["timestamps"]
 
     lines = [
-        "Transcription v4 status",
+        "Transcription engine status",
         "",
         f"run_dir: {report['run_dir']}",
         f"status: {report['status']}",

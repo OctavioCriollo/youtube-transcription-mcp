@@ -5,10 +5,10 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from transcription_v4.chunking import ChunkInfo, merge_chunk_transcripts, plan_chunks
-from transcription_v4.media import FfmpegMedia
-from transcription_v4.models import CanonicalTranscript
-from transcription_v4.providers import (
+from transcription_engine.chunking import ChunkInfo, merge_chunk_transcripts, plan_chunks
+from transcription_engine.media import FfmpegMedia
+from transcription_engine.models import CanonicalTranscript
+from transcription_engine.providers import (
     ELEVENLABS_COST_PER_HOUR_USD,
     ELEVENLABS_DEFAULT_MODEL,
     ELEVENLABS_FILE_LIMIT_BYTES,
@@ -25,16 +25,16 @@ from transcription_v4.providers import (
     GroqProviderError,
     resolve_device_and_compute_type,
 )
-from transcription_v4.quality import evaluate_quality
-from transcription_v4.storage import (
+from transcription_engine.quality import evaluate_quality
+from transcription_engine.storage import (
     FilesystemStorage,
     RunPaths,
     item_id_for_file,
     item_id_for_url,
     sha256_file,
 )
-from transcription_v4.subtitles import SubtitleBuilder, SubtitleConfig
-from transcription_v4.youtube import (
+from transcription_engine.subtitles import SubtitleBuilder, SubtitleConfig
+from transcription_engine.youtube import (
     YtDlpYoutubeDownloader,
     YoutubeDownloadResult,
     ensure_yt_dlp_installed,

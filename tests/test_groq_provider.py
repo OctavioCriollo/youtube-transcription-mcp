@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from transcription_v4.models import CanonicalTranscript, Segment
-from transcription_v4.providers import normalize_groq_response
-from transcription_v4.quality import evaluate_quality
-from transcription_v4.subtitles import SubtitleBuilder, SubtitleGenerationError
+from transcription_engine.models import CanonicalTranscript, Segment
+from transcription_engine.providers import normalize_groq_response
+from transcription_engine.quality import evaluate_quality
+from transcription_engine.subtitles import SubtitleBuilder, SubtitleGenerationError
 
 
 def test_normalize_groq_response_assigns_cross_boundary_word_once() -> None:

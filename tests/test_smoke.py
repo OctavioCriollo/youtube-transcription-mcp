@@ -13,7 +13,7 @@ import pytest
 
 
 def test_config_boots_without_groq_key(monkeypatch, tmp_path):
-    """Boot must not require GROQ_API_KEY; v4 resolves it lazily on first call."""
+    """Boot must not require GROQ_API_KEY; the engine resolves it lazily on first call."""
     from transcription_mcp.config import Config
 
     monkeypatch.delenv("GROQ_API_KEY", raising=False)

@@ -4,9 +4,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from transcription_v4.chunking import plan_chunks
-from transcription_v4.media import FfmpegMedia
-from transcription_v4.pipeline import (
+from transcription_engine.chunking import plan_chunks
+from transcription_engine.media import FfmpegMedia
+from transcription_engine.pipeline import (
     AUTO_CHUNK,
     DEFAULT_PROFILE,
     build_resume_criteria,
@@ -19,7 +19,7 @@ from transcription_v4.pipeline import (
     resolve_model,
     resolve_remote_chunk_duration_s,
 )
-from transcription_v4.providers import (
+from transcription_engine.providers import (
     ELEVENLABS_DEFAULT_MODEL,
     ELEVENLABS_COST_PER_HOUR_USD,
     ELEVENLABS_FILE_LIMIT_BYTES,
@@ -31,7 +31,7 @@ from transcription_v4.providers import (
     LOCAL_PROVIDER,
     resolve_device_and_compute_type,
 )
-from transcription_v4.storage import FilesystemStorage, item_id_for_file
+from transcription_engine.storage import FilesystemStorage, item_id_for_file
 
 
 def plan_file(
@@ -257,7 +257,7 @@ def render_plan_text(report: dict[str, Any]) -> str:
     resume = report["resume"]
     warnings = report["warnings"]
     lines = [
-        "Transcription v4 plan",
+        "Transcription engine plan",
         "",
         f"source: {source['path']}",
         f"size: {source['size']}",

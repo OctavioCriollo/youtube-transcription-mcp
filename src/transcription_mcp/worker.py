@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import Any
 
 from transcription_mcp.jobs import (
-    latest_v4_status,
+    latest_engine_status,
     read_json,
-    summarize_v4_status,
+    summarize_engine_status,
     update_job_status,
     write_json_atomic,
 )
@@ -38,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
 
     stop_monitor = threading.Event()
     monitor = threading.Thread(
-        target=_monitor_v4_status,
+        target=_monitor_engine_status,
         kwargs={
             "job_dir": job_dir,
             "workspace_dir": workspace_dir,
@@ -154,7 +154,7 @@ def _on_pipeline_status(job_dir: Path, event: dict[str, Any]) -> None:
     update_job_status(job_dir, **payload)
 
 
-def _monitor_v4_status(
+def _monitor_engine_status(
     *,
     job_dir: Path,
     workspace_dir: Path,
@@ -168,21 +168,21 @@ def _monitor_v4_status(
             return
         # Heartbeat: the worker is alive and processing. Status readers use this
         # to distinguish a live long job from a hung/dead one.
-        report = latest_v4_status(
+        report = latest_engine_status(
             workspace_dir=workspace_dir,
             source=source,
             source_type=source_type,
         )
         update_payload: dict[str, Any] = {"heartbeat_at": _now_marker()}
         if report:
-            summary = summarize_v4_status(report)
+            summary = summarize_engine_status(report)
             update_payload.update(
                 {
                     "status": "running",
                     "stage": summary["stage"],
                     "message": summary["message"],
-                    "v4_run_dir": summary["v4_run_dir"],
-                    "v4_status": summary["v4_status"],
+                    "engine_run_dir": summary["engine_run_dir"],
+                    "engine_status": summary["engine_status"],
                 }
             )
             if summary["progress"] is not None:

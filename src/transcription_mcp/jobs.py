@@ -13,8 +13,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from transcription_v4.status import inspect_run
-from transcription_v4.storage import item_id_for_url
+from transcription_engine.status import inspect_run
+from transcription_engine.storage import item_id_for_url
 
 from transcription_mcp.config import STORAGE_DIR_NAME
 
@@ -442,7 +442,7 @@ def update_job_status(job_dir: Path, **updates: Any) -> dict[str, Any]:
     return job
 
 
-def latest_v4_status(
+def latest_engine_status(
     *,
     workspace_dir: Path,
     source: str,
@@ -450,7 +450,7 @@ def latest_v4_status(
 ) -> dict[str, Any] | None:
     if source_type == "file":
         # Avoid hashing large files every status poll. The final result still
-        # contains the v4 run_dir and artifact manifest once the worker ends.
+        # contains the engine run_dir and artifact manifest once the worker ends.
         return None
     else:
         item_id = item_id_for_url(source)
@@ -480,7 +480,7 @@ def latest_v4_status(
     return None
 
 
-def summarize_v4_status(report: dict[str, Any]) -> dict[str, Any]:
+def summarize_engine_status(report: dict[str, Any]) -> dict[str, Any]:
     chunking = report.get("chunking", {}) or {}
     expected_chunks = _int_or_none(chunking.get("expected_chunks"))
     partials = _int_or_none(chunking.get("partials")) or 0
@@ -499,11 +499,11 @@ def summarize_v4_status(report: dict[str, Any]) -> dict[str, Any]:
     else:
         message = f"{stage}: transcription is running."
     return {
-        "stage": f"v4_{stage}",
+        "stage": f"engine_{stage}",
         "message": message,
         "progress": progress,
-        "v4_run_dir": report.get("run_dir"),
-        "v4_status": report,
+        "engine_run_dir": report.get("run_dir"),
+        "engine_status": report,
     }
 
 
@@ -536,18 +536,18 @@ def _refresh_job_status(job_dir: Path, job: dict[str, Any]) -> dict[str, Any]:
     if job.get("status") in TERMINAL_STATUSES:
         return job
 
-    report = latest_v4_status(
+    report = latest_engine_status(
         workspace_dir=Path(str(job.get("workspace_dir") or job_dir.parents[1])),
         source=str(job.get("source") or job.get("url") or ""),
         source_type=str(job.get("source_type") or "youtube"),
     )
     if report:
-        summary = summarize_v4_status(report)
+        summary = summarize_engine_status(report)
         update_payload = {
             "stage": summary["stage"],
             "message": summary["message"],
-            "v4_run_dir": summary["v4_run_dir"],
-            "v4_status": summary["v4_status"],
+            "engine_run_dir": summary["engine_run_dir"],
+            "engine_status": summary["engine_status"],
         }
         if summary["progress"] is not None:
             update_payload["progress"] = summary["progress"]
@@ -644,8 +644,8 @@ def _public_job(job_dir: Path, job: dict[str, Any]) -> dict[str, Any]:
         "result_available",
         "failed_attempts",
         "method",
-        "v4_run_dir",
-        "v4_status",
+        "engine_run_dir",
+        "engine_status",
         "error",
         "logs",
     }

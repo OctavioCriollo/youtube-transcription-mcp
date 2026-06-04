@@ -42,7 +42,7 @@ youtube-transcription-mcp = "transcription_mcp.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["transcription_mcp*", "transcription_v4*"]
+include = ["transcription_mcp*", "transcription_engine*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

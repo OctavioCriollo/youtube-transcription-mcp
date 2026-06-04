@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from transcription_v4.models import CanonicalTranscript, Segment, Word
-from transcription_v4.text import smart_join
+from transcription_engine.models import CanonicalTranscript, Segment, Word
+from transcription_engine.text import smart_join
 
 
 @dataclass(frozen=True)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from transcription_v4.models import CanonicalTranscript, Segment
+from transcription_engine.models import CanonicalTranscript, Segment
 
 
 @dataclass(frozen=True)
@@ -144,8 +144,8 @@ def group_segments_by_speaker_and_time(
     if current:
         groups.append(current)
 
-    from transcription_v4.models import Word
-    from transcription_v4.text import smart_join
+    from transcription_engine.models import Word
+    from transcription_engine.text import smart_join
 
     segments: list[Segment] = []
     for group in groups:

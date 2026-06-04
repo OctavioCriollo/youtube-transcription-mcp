@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from transcription_v4.diarization import group_segments_by_speaker_and_time
-from transcription_v4.models import CanonicalTranscript, Segment, Word
-from transcription_v4.text import smart_join
+from transcription_engine.diarization import group_segments_by_speaker_and_time
+from transcription_engine.models import CanonicalTranscript, Segment, Word
+from transcription_engine.text import smart_join
 
 
 LOCAL_PROVIDER = "local"

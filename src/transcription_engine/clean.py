@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from transcription_v4.status import FINAL_ARTIFACTS, inspect_run
+from transcription_engine.status import FINAL_ARTIFACTS, inspect_run
 
 
 RUN_MARKERS = (
@@ -59,7 +59,7 @@ def clean_incomplete_runs(
 def render_clean_text(report: dict[str, Any]) -> str:
     mode = "dry-run" if report["dry_run"] else "applied"
     lines = [
-        "Transcription v4 clean",
+        "Transcription engine clean",
         "",
         f"mode: {mode}",
         f"scope: {report['scope']}",

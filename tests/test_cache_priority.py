@@ -67,7 +67,7 @@ def _write_complete_run(runs_dir, run_id, *, provider, url, mtime=None):
 
 def test_cache_prefers_higher_priority_over_recency(tmp_path):
     from transcription_mcp.pipeline import _read_cached_url_result
-    from transcription_v4.storage import item_id_for_url
+    from transcription_engine.storage import item_id_for_url
 
     url = "https://youtu.be/example"
     runs = tmp_path / "storage" / "items" / item_id_for_url(url) / "runs"
@@ -93,7 +93,7 @@ def test_cache_prefers_higher_priority_over_recency(tmp_path):
 
 def test_cache_never_serves_subtitles(tmp_path):
     from transcription_mcp.pipeline import _read_cached_url_result
-    from transcription_v4.storage import item_id_for_url
+    from transcription_engine.storage import item_id_for_url
 
     url = "https://youtu.be/subsonly"
     runs = tmp_path / "storage" / "items" / item_id_for_url(url) / "runs"

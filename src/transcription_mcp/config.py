@@ -89,7 +89,7 @@ class Config:
     @classmethod
     def from_env(cls) -> "Config":
         # GROQ_API_KEY is resolved lazily by the vendored
-        # transcription_v4.providers.GroqProvider, which checks (in order):
+        # transcription_engine.providers.GroqProvider, which checks (in order):
         #   1. GROQ_API_KEY env var
         #   2. storage/secrets/groq.key in project root or any parent dir
         #   3. TRANSCRIPTION_V4_SECRETS_DIR/groq.key
