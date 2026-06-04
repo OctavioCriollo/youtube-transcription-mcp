@@ -19,11 +19,11 @@ env:
 
 jobs:
   # Gate: lint + dependency consistency + tests, on the SAME Python as the image
-  # (3.11). Runs inside a python:3.11 container so we test on the production
+  # (3.14). Runs inside a python:3.14 container so we test on the production
   # interpreter, not the runner's default. Blocks the publish on failure.
   test:
     runs-on: ubuntu-latest
-    container: python:3.11
+    container: python:3.14
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
