@@ -9,17 +9,20 @@ description = "MCP server that transcribes YouTube videos via a Groq → ElevenL
 requires-python = ">=3.11"
 readme = "README.md"
 authors = [{ name = "Octavio Criollo" }]
+# Floors raised to the 2026-era versions we actually run/test (verified 2026-06-04).
+# Still ">=" (not pinned) so newer is allowed; this just stops a clean install from
+# resolving to an ancient, untested version. Exact reproducibility is the lockfile's job.
 dependencies = [
-    "mcp>=1.12.4",
-    "httpx>=0.27",
-    "yt-dlp>=2024.8",
-    "pydantic>=2.0",
-    "youtube-transcript-api>=0.6,<2",
+    "mcp>=1.27.2",
+    "httpx>=0.28.1",
+    "yt-dlp>=2026.3.17",
+    "pydantic>=2.13.4",
+    "youtube-transcript-api>=1.2.4,<2",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0",
+    "pytest>=9.0.3",
 ]
 
 [project.scripts]
