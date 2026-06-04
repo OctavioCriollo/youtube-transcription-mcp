@@ -486,6 +486,32 @@ clients that send a `progressToken`, but the reliable contract is the durable
 `revision` + long-poll. The agent-side rule ("loop watch_transcription, do not yield")
 is an agent instruction (configured separately), not part of the MCP.
 
+## Reproducible installs via uv.lock (corrective 14)
+
+2026-06-04. The project keeps flexible dependency floors in `pyproject.toml`, but commits
+`uv.lock` and uses `uv sync --frozen` in CI and Docker. This gives us both:
+
+- human-maintained dependency policy in `pyproject.toml` (`mcp>=1.27.2`, etc.);
+- exact, hash-backed dependency resolution in production builds (`uv.lock`).
+
+The publish workflow first runs:
+
+```bash
+uv sync --frozen --extra dev
+uv run --frozen ruff check .
+uv run --frozen python -m pip check
+uv run --frozen pytest
+```
+
+The Docker image copies `pyproject.toml` + `uv.lock` and installs with:
+
+```bash
+uv sync --frozen --no-dev --no-editable --compile-bytecode
+```
+
+`--frozen` is intentional: if someone changes dependencies in `pyproject.toml` without
+updating `uv.lock`, CI/builds fail instead of silently resolving a new environment.
+
 ## Anti-patterns to watch for in future iterations
 
 Three failure modes to recognise if they reappear:

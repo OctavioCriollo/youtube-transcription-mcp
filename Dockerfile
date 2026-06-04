@@ -8,17 +8,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy project files. pyproject.toml is small enough that we don't bother
-# splitting it for layer caching at this scale.
-COPY pyproject.toml ./
+# Use the checked-in uv.lock for reproducible dependency resolution in the image.
+RUN pip install --no-cache-dir uv==0.10.5
+
+COPY pyproject.toml uv.lock ./
 COPY src/ ./src/
 
-RUN pip install --no-cache-dir -e .
+RUN uv sync --frozen --no-dev --no-editable --compile-bytecode
 
 ENV WORKSPACE_DIR=/workspace \
     MCP_HOST=0.0.0.0 \
     MCP_PORT=8000 \
     MCP_HTTP_PATH=/mcp \
+    PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1
 
 # NOTE: no `VOLUME` directive on purpose. In production the workspace is provided

@@ -420,6 +420,7 @@ youtube-transcription-mcp/
 │   └── decisions.md                  # architectural rationale
 ├── tests/                            # smoke + URL-parsing tests
 ├── Dockerfile
+├── uv.lock                           # reproducible dependency resolution for CI/Docker
 └── docker-compose.snippet.yml
 ```
 
@@ -435,23 +436,23 @@ See [`docs/decisions.md`](docs/decisions.md) for the full rationale.
 git clone https://github.com/OctavioCriollo/youtube-transcription-mcp.git
 cd youtube-transcription-mcp
 
-python -m venv .venv
-.venv/Scripts/python -m pip install -e .[dev]     # Windows
-# .venv/bin/python -m pip install -e .[dev]        # macOS/Linux
+uv sync --frozen --extra dev
 
-.venv/Scripts/python -m pytest                     # run tests
+uv run --frozen pytest
+uv run --frozen ruff check .
+uv run --frozen python -m pip check
 ```
 
 Run locally over stdio (what `uvx` does):
 
 ```bash
-GROQ_API_KEY=gsk_... ELEVENLABS_API_KEY=... .venv/Scripts/youtube-transcription-mcp
+GROQ_API_KEY=gsk_... ELEVENLABS_API_KEY=... uv run --frozen youtube-transcription-mcp
 ```
 
 Quick HTTP smoke test:
 
 ```bash
-MCP_TRANSPORT=streamable-http .venv/Scripts/youtube-transcription-mcp &
+MCP_TRANSPORT=streamable-http uv run --frozen youtube-transcription-mcp &
 curl -s -X POST http://localhost:8000/mcp \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \

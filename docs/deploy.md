@@ -252,10 +252,9 @@ transcription, host this MCP on your home machine instead:
 # On your home PC
 git clone https://github.com/<you>/transcription-mcp.git
 cd transcription-mcp
-python -m venv .venv
-.venv/Scripts/python -m pip install -e .
+uv sync --frozen
 export GROQ_API_KEY=gsk_...
-MCP_TRANSPORT=streamable-http .venv/Scripts/transcription-mcp
+MCP_TRANSPORT=streamable-http uv run --frozen youtube-transcription-mcp
 ```
 
 Then on the OpenClaw host, with Tailscale connecting both:
