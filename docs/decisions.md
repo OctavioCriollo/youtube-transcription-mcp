@@ -190,6 +190,11 @@ Do not solve this by enabling `allow_estimated_subtitles=True` globally.
 Estimated subtitles are a fallback for missing word timestamps, not a
 replacement for real Groq word timestamps.
 
+> Clarification (2026-06-04): this rule is about the **audio** path (Groq/ElevenLabs),
+> where word timestamps exist and must not be masked by estimation. The **subtitles**
+> path legitimately uses `allow_estimated_subtitles=True`, because YouTube captions
+> genuinely have no word-level timing — see "Subtitles produce a full run" below.
+
 ## Corrective: Groq words are canonical text when available
 
 2026-06-01 corrective after a 30-minute YouTube live transcription:
@@ -294,7 +299,9 @@ The MCP layer exposes production features without changing the default path:
 
 - Completed runs are treated as the cache. The MCP searches completed runs
   in `storage`, validates provider/order/language/diarization criteria, and
-  returns a cache hit only while `MCP_CACHE_TTL_HOURS` is fresh.
+  returns a cache hit only while `MCP_CACHE_TTL_HOURS` is fresh. Selection is by
+  provider priority and excludes the subtitles fallback — see "Cache respects
+  priority and never serves subtitles" below.
 - Result payloads expose an artifact manifest instead of embedding every large
   artifact. `get_transcription_artifact` fetches a named text artifact on
   demand.

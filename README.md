@@ -58,7 +58,9 @@ hand back low-quality captions as if they were premium audio transcription.
   Optional `YT_COOKIES_FILE` / `YT_PROXY` can improve the cheaper Groq + yt-dlp path.
 - **Reusable artifacts.** Completed runs expose transcript, timestamps, SRT, VTT,
   canonical JSON, audit files, and speaker reports when available.
-- **Smart reuse.** Completed runs can be reused from the workspace cache with a TTL.
+- **Smart reuse.** Completed runs can be reused from the workspace cache with a TTL,
+  chosen by provider **priority** (not recency); the subtitles fallback is always
+  recomputed so it never shadows a real STT provider.
 - **Cost-aware.** Tries the cheapest provider first; only escalates when needed.
 - **Auto language detection.** Detects the spoken language; never translates unless asked.
 - **Transparent results.** Every response reports `method`, `provider`,
@@ -245,6 +247,7 @@ Common optional parameters:
   "model": "whisper-large-v3-turbo",
   "provider": "groq",
   "method": "groq",                       // groq | elevenlabs | subtitles
+  "provider_order_effective": ["groq", "elevenlabs", "subtitles"], // server policy, not a client arg
   "cache": { "hit": false },
   "estimated_cost_usd": 0.0002,
   "source": { "type": "youtube", "url": "https://www.youtube.com/watch?v=jNQXAC9IVRw", "path": null },
