@@ -148,7 +148,7 @@ claude mcp add transcription-youtube \
 
 From any connected chat (Telegram, Discord, WebChat, or the Claude Code prompt):
 
-> **Transcribe this video for me:** https://www.youtube.com/watch?v=jNQXAC9IVRw
+> **Transcribe this video from my channel:** <YOUR_YOUTUBE_VIDEO_URL>
 
 The agent calls `transcribe_youtube` and replies with the text. Behind the scenes:
 
@@ -259,8 +259,8 @@ Common optional parameters:
   "provider_order_effective": ["groq", "elevenlabs", "subtitles"], // server policy, not a client arg
   "cache": { "hit": false },
   "estimated_cost_usd": 0.0002,
-  "source": { "type": "youtube", "url": "https://www.youtube.com/watch?v=jNQXAC9IVRw", "path": null },
-  "youtube": { "video_id": "jNQXAC9IVRw", "title": "Me at the zoo", "channel": "jawed" },
+  "source": { "type": "youtube", "url": "<YOUR_YOUTUBE_VIDEO_URL>", "path": null },
+  "youtube": { "video_id": "<YOUR_VIDEO_ID>", "title": "Example video", "channel": "Your channel" },
   "artifacts": {
     "transcript_txt": { "path": ".../transcript.txt", "exists": true, "size_bytes": 1234 },
     "subtitles_srt": { "path": ".../subtitles.srt", "exists": true, "size_bytes": 2345 },

@@ -177,9 +177,10 @@ calls a tool.
 
 ## 6. Smoke test from your channel
 
-In any OpenClaw-connected chat (Telegram, Discord, WebChat):
+In any OpenClaw-connected chat (Telegram, Discord, WebChat), use a video you own
+or have permission to process:
 
-> Transcribe this 19-second video: https://www.youtube.com/watch?v=jNQXAC9IVRw
+> Transcribe this video from my channel: <YOUR_YOUTUBE_VIDEO_URL>
 
 The agent should call `transcribe_youtube` and reply with the text.
 

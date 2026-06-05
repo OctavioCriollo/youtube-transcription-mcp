@@ -147,12 +147,12 @@ def test_extract_video_id_variants():
     from transcription_mcp.youtube_subtitles import extract_video_id
 
     cases = {
-        "https://www.youtube.com/watch?v=jNQXAC9IVRw": "jNQXAC9IVRw",
-        "https://youtu.be/jNQXAC9IVRw": "jNQXAC9IVRw",
-        "https://www.youtube.com/shorts/jNQXAC9IVRw": "jNQXAC9IVRw",
-        "https://www.youtube.com/embed/jNQXAC9IVRw": "jNQXAC9IVRw",
-        "https://www.youtube.com/watch?v=jNQXAC9IVRw&t=10s": "jNQXAC9IVRw",
-        "jNQXAC9IVRw": "jNQXAC9IVRw",
+        "https://www.youtube.com/watch?v=AbCdEfGhIjK": "AbCdEfGhIjK",
+        "https://youtu.be/AbCdEfGhIjK": "AbCdEfGhIjK",
+        "https://www.youtube.com/shorts/AbCdEfGhIjK": "AbCdEfGhIjK",
+        "https://www.youtube.com/embed/AbCdEfGhIjK": "AbCdEfGhIjK",
+        "https://www.youtube.com/watch?v=AbCdEfGhIjK&t=10s": "AbCdEfGhIjK",
+        "AbCdEfGhIjK": "AbCdEfGhIjK",
     }
     for url, expected in cases.items():
         assert extract_video_id(url) == expected, url
