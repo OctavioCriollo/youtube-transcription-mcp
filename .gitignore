@@ -17,6 +17,9 @@ env/
 # Workspace (local dev)
 workspace/
 
+# Local code-intelligence/tool caches
+.serena/
+
 # Local secrets and any v4-style key files (never commit)
 storage/
 *.key
