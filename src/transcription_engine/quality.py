@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from transcription_engine.models import CanonicalTranscript, SubtitleCue
@@ -38,15 +38,22 @@ def evaluate_quality(
     config: SubtitleConfig | None = None,
     parity_threshold: float = 0.995,
     allow_estimated_subtitles: bool = False,
+    timestamp_level: str | None = None,
+    word_timestamps: bool | None = None,
 ) -> QualityReport:
     cfg = config or SubtitleConfig()
+    caption_level_timestamps = _has_caption_level_timestamps(timestamp_level, word_timestamps)
+    timing_cfg = _caption_timing_config(cfg) if caption_level_timestamps else cfg
     checks = [
         _check_parity(transcript, cues, parity_threshold),
         _check_cue_shape(cues, cfg),
-        _check_timing(cues, cfg),
+        _check_timing(cues, timing_cfg),
         _check_word_timestamps(
             transcript,
             allow_estimated_subtitles=allow_estimated_subtitles,
+            timestamp_level=timestamp_level,
+            word_timestamps=word_timestamps,
+            caption_level_timestamps=caption_level_timestamps,
         ),
     ]
     if any(check.status == "error" for check in checks):
@@ -137,9 +144,14 @@ def _check_word_timestamps(
     transcript: CanonicalTranscript,
     *,
     allow_estimated_subtitles: bool,
+    timestamp_level: str | None,
+    word_timestamps: bool | None,
+    caption_level_timestamps: bool,
 ) -> QualityCheck:
     without_words = [i for i, segment in enumerate(transcript.segments) if not segment.words]
-    if without_words and allow_estimated_subtitles:
+    if without_words and caption_level_timestamps:
+        status = "pass"
+    elif without_words and allow_estimated_subtitles:
         status = "warning"
     elif without_words:
         status = "error"
@@ -152,5 +164,21 @@ def _check_word_timestamps(
             "segments_without_words": without_words[:50],
             "count": len(without_words),
             "estimated_subtitles_allowed": allow_estimated_subtitles,
+            "timestamp_level": timestamp_level,
+            "word_timestamps": word_timestamps,
+            "caption_level_timestamps": caption_level_timestamps,
         },
     )
+
+
+def _has_caption_level_timestamps(
+    timestamp_level: str | None,
+    word_timestamps: bool | None,
+) -> bool:
+    return str(timestamp_level or "").strip().lower() == "caption" and word_timestamps is False
+
+
+def _caption_timing_config(cfg: SubtitleConfig) -> SubtitleConfig:
+    # YouTube caption blocks can be contiguous; that is valid source timing, not a cue
+    # normalization failure. Overlaps are still caught because min_gap_s remains 0.
+    return replace(cfg, min_gap_s=0.0)

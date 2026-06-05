@@ -454,10 +454,17 @@ def _build_subtitles_run(
         duration=float(captions.get("duration_s") or segments[-1].end),
         segments=tuple(segments),
     )
-    # Caption blocks have no word-level timestamps; allow_estimated keeps the
-    # word_timestamps check at "warning" (honest) instead of "error".
+    timestamp_level = str(captions.get("timestamp_level") or "caption")
+    word_timestamps = bool(captions.get("word_timestamps", False))
+    # Caption blocks have no word-level timestamps by design. Quality treats
+    # caption-level timing as valid for the subtitles provider, without
+    # inventing words or estimated word timings.
     quality = evaluate_quality(
-        transcript, cues, config=config, allow_estimated_subtitles=True
+        transcript,
+        cues,
+        config=config,
+        timestamp_level=timestamp_level,
+        word_timestamps=word_timestamps,
     )
 
     youtube = captions.get("youtube") or {}
@@ -472,8 +479,8 @@ def _build_subtitles_run(
         "diarize": False,
         "num_speakers": None,
         "estimated_cost_usd": captions.get("estimated_cost_usd", 0.0),
-        "timestamp_level": captions.get("timestamp_level", "caption"),
-        "word_timestamps": bool(captions.get("word_timestamps", False)),
+        "timestamp_level": timestamp_level,
+        "word_timestamps": word_timestamps,
         "source_timestamps": captions.get("source_timestamps", "youtube_captions"),
         "youtube_video_id": youtube.get("video_id"),
         "youtube_title": youtube.get("title"),

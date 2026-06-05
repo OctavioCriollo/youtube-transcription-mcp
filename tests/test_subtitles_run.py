@@ -3,6 +3,8 @@ so create_transcription_bundle and get_transcription_artifact work for it too.""
 
 from __future__ import annotations
 
+import json
+
 
 def _fake_captions() -> dict:
     return {
@@ -24,7 +26,41 @@ def _fake_captions() -> dict:
     }
 
 
-def test_build_subtitles_run_writes_full_artifact_set(tmp_path):
+def test_caption_level_quality_passes_without_word_timestamps() -> None:
+    from transcription_engine.models import CanonicalTranscript, Segment, SubtitleCue
+    from transcription_engine.quality import evaluate_quality
+
+    transcript = CanonicalTranscript(
+        source="https://youtu.be/vid12345678",
+        provider="youtube-transcript-api",
+        model="youtube-captions",
+        language="en",
+        duration=2.5,
+        segments=(Segment(start=0.0, end=2.5, text="hello world"),),
+    )
+    cues = [
+        SubtitleCue(
+            start=0.0,
+            end=2.5,
+            lines=("hello world",),
+            source_word_range=(0, 1),
+        )
+    ]
+
+    caption_report = evaluate_quality(
+        transcript,
+        cues,
+        timestamp_level="caption",
+        word_timestamps=False,
+    )
+    strict_report = evaluate_quality(transcript, cues)
+
+    assert caption_report.status == "pass"
+    assert strict_report.status == "error"
+
+
+def test_build_subtitles_run_writes_full_artifact_set(tmp_path) -> None:
+    from transcription_engine.audit import audit_run
     from transcription_mcp.pipeline import _build_subtitles_run, _read_run_artifacts
 
     run_dir = _build_subtitles_run(
@@ -49,12 +85,21 @@ def test_build_subtitles_run_writes_full_artifact_set(tmp_path):
     result = _read_run_artifacts(run_dir)
     assert result["run_dir"] == str(run_dir)
     assert result["artifacts"]["subtitles_srt"]["exists"] is True
-    # Caption content must NOT be a hard failure; warning is acceptable.
-    assert result["quality_status"] != "error"
+    assert result["quality_status"] == "pass"
     assert "hello world" in result["transcript"]
 
+    quality = json.loads((run_dir / "quality.json").read_text(encoding="utf-8"))
+    word_check = next(check for check in quality["checks"] if check["name"] == "word_timestamps")
+    assert word_check["status"] == "pass"
+    assert word_check["detail"]["timestamp_level"] == "caption"
+    assert word_check["detail"]["word_timestamps"] is False
+    assert word_check["detail"]["caption_level_timestamps"] is True
 
-def test_subtitles_fallback_returns_run_dir_for_delivery(tmp_path, monkeypatch):
+    audit = audit_run(run_dir)
+    assert audit["summary"]["quality_status"] == "pass"
+
+
+def test_subtitles_fallback_returns_run_dir_for_delivery(tmp_path, monkeypatch) -> None:
     from transcription_mcp import pipeline
 
     monkeypatch.setattr(
@@ -80,5 +125,6 @@ def test_subtitles_fallback_returns_run_dir_for_delivery(tmp_path, monkeypatch):
     assert result["artifacts"]["subtitles_srt"]["exists"] is True
     assert result["word_timestamps"] is False
     assert result["timestamp_level"] == "caption"
+    assert result["quality_status"] == "pass"
     assert result["provider_order_effective"] == ["groq", "elevenlabs", "subtitles"]
     assert result["failed_attempts"] == {"groq": "blocked", "elevenlabs": "auth"}

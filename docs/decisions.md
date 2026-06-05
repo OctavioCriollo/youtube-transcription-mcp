@@ -192,8 +192,8 @@ replacement for real Groq word timestamps.
 
 > Clarification (2026-06-04): this rule is about the **audio** path (Groq/ElevenLabs),
 > where word timestamps exist and must not be masked by estimation. The **subtitles**
-> path legitimately uses `allow_estimated_subtitles=True`, because YouTube captions
-> genuinely have no word-level timing — see "Subtitles produce a full run" below.
+> path does not estimate words either; it maps each YouTube caption block directly to
+> one segment and one cue, then evaluates it as `timestamp_level=caption`.
 
 ## Corrective: Groq words are canonical text when available
 
@@ -434,10 +434,14 @@ no re-grouping**. Because cues and transcript come from the same block text, tok
 parity passes naturally.
 
 Timestamps are caption-level: `timestamp_level=caption`, `word_timestamps=false`. The
-run is built with `allow_estimated_subtitles=True` so the missing word timestamps are a
-**warning**, not an error. Promoting this to a "pass" via a caption-aware quality branch
-is deferred (corrective 5b); `warning` is the honest status for now. Cue-timing
-normalization (merging ultra-short / overlapping auto-caption blocks) is also 5b.
+run is evaluated with that metadata, so missing word timestamps are a valid provider
+characteristic, not an estimated-subtitle shortcut. When parity, shape and source timing
+checks pass, `quality_status=pass`.
+
+Caption timing is not normalized like Groq/ElevenLabs output. Each YouTube caption block
+remains one cue; the subtitles path only sanitizes invalid ranges and wraps text lines.
+Contiguous caption blocks are valid source timing, so quality does not require an
+artificial minimum gap for this provider.
 
 Because subtitle runs are now real runs, they are cacheable like any other provider —
 which makes the cache-priority hardening (corrective 4: select by priority, not mtime)

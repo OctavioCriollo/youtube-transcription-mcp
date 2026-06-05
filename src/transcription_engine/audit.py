@@ -77,7 +77,14 @@ def build_audit(
     metadata = metadata or {}
     quality_dict = quality.to_dict() if quality is not None else None
     if quality_dict is None:
-        quality_dict = evaluate_quality(transcript, cues, config=cfg).to_dict()
+        quality_dict = evaluate_quality(
+            transcript,
+            cues,
+            config=cfg,
+            allow_estimated_subtitles=bool(metadata.get("allow_estimated_subtitles", False)),
+            timestamp_level=_optional_str(metadata.get("timestamp_level")),
+            word_timestamps=_optional_bool(metadata.get("word_timestamps")),
+        ).to_dict()
 
     transcript_counter = token_counter(transcript.text)
     subtitle_counter = token_counter(" ".join(cue.text for cue in cues))
@@ -330,6 +337,16 @@ def _find_suspicious_unicode(transcript: CanonicalTranscript) -> dict[str, Any]:
         "samples": samples[:50],
         "odd_character_counts": dict(odd_characters.most_common(50)),
     }
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _optional_bool(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
 
 
 def _short_cues(cues: list[SubtitleCue], cfg: SubtitleConfig) -> list[dict[str, Any]]:
