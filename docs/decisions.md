@@ -12,11 +12,10 @@ The smallest thing that closes the loop:
 user in Telegram → OpenClaw agent → MCP tool → text back
 ```
 
-Build smallest, validate, then iterate. The previous attempt
-(`transcription-mcp/` in the parent directory) designed for every
-future concern from day one — DDD layers, SQLite registry, manifest
-checksums, 12-state job machine, multi-tenancy hooks — and never
-validated the end-to-end flow with OpenClaw.
+Build smallest, validate, then iterate. An earlier internal prototype
+designed for every future concern from day one — DDD layers, SQLite
+registry, manifest checksums, 12-state job machine, multi-tenancy
+hooks — and never validated the end-to-end flow with OpenClaw.
 
 ## Distribution via `uvx --from git+https://...`, not as a Docker side-car
 
@@ -27,7 +26,7 @@ docs, the configuration is just:
 ```json
 {
   "command": "uvx",
-  "args": ["--from", "git+https://github.com/.../repo.git", "transcription-mcp"]
+  "args": ["--from", "git+https://github.com/.../youtube-transcription-mcp.git", "youtube-transcription-mcp"]
 }
 ```
 

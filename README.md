@@ -67,17 +67,32 @@ hand back low-quality captions as if they were premium audio transcription.
 - **Quality signals.** Audio transcripts come with a structural + linguistic audit
   (token parity, low-confidence detection, suspicious unicode, repeated-word loops).
 - **Universal.** Standard MCP — works in OpenClaw, Claude Code, Claude Desktop, Cursor, etc.
-- **Two transports.** `stdio` (default, for `uvx`/`npx`-style launch) or `streamable-http`
+- **Observable progress.** `watch_transcription` long-polls the job until the next
+  `revision` (a new stage/status) so the agent shows progress in the same turn,
+  without depending on push notifications.
+- **File delivery.** `create_transcription_bundle` packages a completed run into a
+  `.zip` on the shared volume and returns a host-side path the gateway can read and
+  send — no streaming large artifacts back through the MCP protocol.
+- **Server-side provider policy.** Public tools do **not** accept a `provider_order`;
+  the order is fixed by the server (configurable via `MCP_*_PROVIDER_ORDER` env vars)
+  and every response reports `provider_order_effective` for auditability.
+- **Two transports.** `stdio` (default, for `uvx`-style launch) or `streamable-http`
   (for hosting as a remote service).
 
 ---
 
 ## Installation
 
-### As an MCP server (recommended)
+This MCP supports two deployment patterns. Public tools, env vars and response
+shape are identical across both — only the way the client reaches the server
+changes:
 
-The server is launched on demand by your MCP client via `uvx`, straight from this repo —
-no manual clone, no global install.
+- **Desktop clients** (Codex, Claude Code, Claude Desktop, Cursor) launch it as a
+  stdio child process via `uvx`, straight from this GitHub repo.
+- **OpenClaw on a VPS** (or any container host) runs the prebuilt GHCR image over
+  `streamable-http` in its own Docker Compose stack alongside the gateway.
+
+### Desktop clients (uvx via stdio)
 
 **Prerequisites on the host:**
 
@@ -89,12 +104,33 @@ curl -LsSf https://astral.sh/uv/install.sh | sh      # Linux/macOS
 # ffmpeg (only used by the Groq audio path)
 sudo apt install ffmpeg        # Debian/Ubuntu
 brew install ffmpeg            # macOS
+choco install ffmpeg           # Windows (or download from https://ffmpeg.org)
 ```
 
-**Register with OpenClaw:**
+#### Codex (`~/.codex/config.toml`)
+
+```toml
+[mcp_servers.youtube-transcription]
+command = "uvx"
+args = ["--from", "git+https://github.com/OctavioCriollo/youtube-transcription-mcp.git", "youtube-transcription-mcp"]
+env_vars = ["GROQ_API_KEY", "ELEVENLABS_API_KEY"]
+startup_timeout_sec = 120
+tool_timeout_sec = 600
+```
+
+Set `GROQ_API_KEY` and `ELEVENLABS_API_KEY` as user environment variables, then
+restart Codex (or VS Code if you use the Codex extension). Validate with:
 
 ```bash
-openclaw mcp set transcripcion '{
+codex mcp list
+codex mcp get youtube-transcription
+```
+
+#### Claude Code (`~/.claude.json`)
+
+```json
+"transcription-youtube": {
+  "type": "stdio",
   "command": "uvx",
   "args": [
     "--from",
@@ -105,10 +141,10 @@ openclaw mcp set transcripcion '{
     "GROQ_API_KEY": "gsk_...",
     "ELEVENLABS_API_KEY": "..."
   }
-}'
+}
 ```
 
-**Register with Claude Code:**
+Or use the CLI:
 
 ```bash
 claude mcp add transcription-youtube \
@@ -117,7 +153,12 @@ claude mcp add transcription-youtube \
   -- uvx --from git+https://github.com/OctavioCriollo/youtube-transcription-mcp.git youtube-transcription-mcp
 ```
 
-**Register with Claude Desktop / Cursor** (`mcp.json` / `claude_desktop_config.json`):
+Validate with `claude mcp list`.
+
+#### Claude Desktop
+
+Edit `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or
+`~/Library/Application Support/Claude/claude_desktop_config.json` (macOS):
 
 ```json
 {
@@ -138,9 +179,93 @@ claude mcp add transcription-youtube \
 }
 ```
 
-> **Private repo note:** this repository is private. The host running `uvx` must have Git
-> credentials for GitHub (e.g. `gh auth login`, an SSH key, or a token in the URL). Once
-> configured, `uvx` clones and caches it automatically.
+Restart Claude Desktop after editing.
+
+#### Cursor (`~/.cursor/mcp.json` or `.cursor/mcp.json` in the workspace)
+
+Same `mcpServers` block as Claude Desktop above.
+
+### Server deployment (OpenClaw via streamable-http)
+
+For production, the MCP runs as a container from the prebuilt GHCR image
+(`ghcr.io/octaviocriollo/youtube-transcription-mcp:latest`) in a **separate**
+Docker Compose stack next to OpenClaw. The two stacks share a private Docker
+network (`openclaw-mcp-network`) and a read-write volume
+(`openclaw_mcp_workspace`) that the OpenClaw stack owns; this stack joins them
+as `external`.
+
+Minimal compose service (full stack, env file template and operator-grade
+procedure in [`docs/deploy.md`](docs/deploy.md)):
+
+```yaml
+services:
+  transcription-mcp:
+    image: ghcr.io/octaviocriollo/youtube-transcription-mcp:latest
+    pull_policy: always
+    restart: unless-stopped
+    environment:
+      MCP_TRANSPORT: streamable-http
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 8000
+      MCP_HTTP_PATH: /mcp
+      WORKSPACE_DIR: /mcp-workspace/transcription-mcp
+      OPENCLAW_WORKSPACE_DIR: /home/node/.openclaw/mcp-workspace/transcription-mcp
+      TRANSCRIPTION_JOB_STALE_SECONDS: 180
+      TRANSCRIPTION_JOB_TIMEOUT_SECONDS: 3600
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY}
+    volumes:
+      - openclaw_mcp_workspace:/mcp-workspace
+    expose:
+      - "8000"
+    networks:
+      - openclaw-mcp-network
+
+volumes:
+  openclaw_mcp_workspace:
+    external: true
+
+networks:
+  openclaw-mcp-network:
+    external: true
+```
+
+Bring up the OpenClaw stack **first** (it creates the network and volume), then
+this MCP stack, then register the MCP **once** (the gateway hot-applies it):
+
+```bash
+docker exec openclaw-openclaw-gateway-1 \
+  openclaw mcp set youtube-transcription \
+  '{"url":"http://transcription-mcp:8000/mcp","transport":"streamable-http"}'
+
+docker exec openclaw-openclaw-gateway-1 openclaw mcp list
+```
+
+> **Why not uvx for OpenClaw?** OpenClaw's gateway image does not ship
+> `ffmpeg`/`yt-dlp`. Installing them at runtime is lost on container recreate,
+> and the uvx model also stored provider API keys inside `openclaw.json`. The
+> containerized model ships dependencies inside a self-contained image and
+> keeps keys in the MCP stack's `.env`.
+
+#### Variant: host on a separate machine over Tailscale
+
+When the Groq path needs a residential IP (cloud VPS gets HTTP 403 from
+YouTube), run the MCP on your home PC instead and point OpenClaw at it over
+Tailscale:
+
+```bash
+# On the home PC
+MCP_TRANSPORT=streamable-http \
+GROQ_API_KEY=gsk_... ELEVENLABS_API_KEY=... \
+  uvx --from git+https://github.com/OctavioCriollo/youtube-transcription-mcp.git youtube-transcription-mcp
+```
+
+```bash
+# On the OpenClaw host
+docker exec openclaw-openclaw-gateway-1 \
+  openclaw mcp set youtube-transcription \
+  '{"url":"http://<tailscale-hostname>:8000/mcp","transport":"streamable-http"}'
+```
 
 ---
 
@@ -169,7 +294,7 @@ Synchronous tools:
 
 | Tool                   | Purpose                                                       |
 | ---------------------- | ------------------------------------------------------------- |
-| `transcribe_youtube`   | Blocking YouTube transcription with Groq -> ElevenLabs -> CC. |
+| `transcribe_youtube`   | Blocking YouTube transcription with Groq -> ElevenLabs -> captions. |
 | `transcribe_media_url` | Blocking public media URL transcription via audio providers.  |
 | `transcribe_file`      | Blocking local file transcription on the MCP host.            |
 
@@ -193,7 +318,7 @@ Delivery (for hosts that send files back to the user, e.g. OpenClaw):
 
 | Tool                          | Purpose                                                                |
 | ----------------------------- | ---------------------------------------------------------------------- |
-| `create_transcription_bundle` | Packages all artifacts of a completed `run_id` into a single `.zip` and returns both the MCP-side path and the host-side path (`bundle_path_for_openclaw`) so the host can read and send it. See [Bundle delivery](#-production-hardening-health-stale-jobs-bundle-delivery). |
+| `create_transcription_bundle` | Packages all artifacts of a completed `run_id` into a single `.zip` and returns both the MCP-side path and the host-side path (`bundle_path_for_openclaw`) so the host can read and send it. See [Production hardening](#production-hardening-health-stale-jobs-bundle-delivery). |
 
 ### Agent workflow guidance
 
@@ -369,36 +494,12 @@ The bundle is **temporary and regenerable** — the source of truth stays in
 
 ---
 
-## Hosting as a remote service (optional)
-
-Prefer to run it as a long-lived HTTP service (e.g. on a separate machine reached over
-Tailscale, so the Groq path uses a residential IP)? Switch the transport:
-
-```bash
-MCP_TRANSPORT=streamable-http \
-GROQ_API_KEY=gsk_... ELEVENLABS_API_KEY=... \
-  uvx --from git+https://github.com/OctavioCriollo/youtube-transcription-mcp.git youtube-transcription-mcp
-```
-
-Then point the client at the URL instead of a command:
-
-```bash
-openclaw mcp set transcripcion '{
-  "url": "http://<host>:8000/mcp",
-  "transport": "streamable-http"
-}'
-```
-
-A `Dockerfile` and `docker-compose.snippet.yml` are included for container deployment.
-
----
-
 ## Architecture
 
 ```text
 youtube-transcription-mcp/
 ├── src/
-│   ├── transcription_mcp/            # MCP layer (~350 LOC)
+│   ├── transcription_mcp/            # MCP layer (tools, jobs, pipeline)
 │   │   ├── server.py                 # FastMCP setup, stdio/http dispatch
 │   │   ├── tools.py                  # sync + async MCP tool registration
 │   │   ├── jobs.py                   # persistent async job status/result/cancel + stale detection
@@ -417,10 +518,9 @@ youtube-transcription-mcp/
 ├── docs/
 │   ├── deploy.md                     # step-by-step deployment + troubleshooting
 │   └── decisions.md                  # architectural rationale
-├── tests/                            # smoke + URL-parsing tests
+├── tests/                            # provider policy, cache priority, jobs, watch, subtitles, pipeline, smoke
 ├── Dockerfile
-├── uv.lock                           # reproducible dependency resolution for CI/Docker
-└── docker-compose.snippet.yml
+└── uv.lock                           # reproducible dependency resolution for CI/Docker
 ```
 
 The MCP layer is deliberately thin: it imports the vendored `transcription_engine` package
@@ -460,23 +560,9 @@ curl -s -X POST http://localhost:8000/mcp \
 
 ---
 
-## Roadmap
-
-- [x] Async job model with status polling (for videos > 30 min).
-- [x] File/media ingestion for local files and public media URLs.
-- [x] Optional SRT / VTT output for the agent via artifact manifest/content.
-- [x] Diarization passthrough (speaker labels) on the ElevenLabs path.
-- [x] Background TTL cleanup for MCP job records.
-- [x] Real `/health` endpoint + Docker `HEALTHCHECK` (detects hung-but-listening MCP).
-- [x] Heartbeat + `stale_failed` detection (a dead/hung worker stops blocking a slot).
-- [x] Bundle delivery (`create_transcription_bundle`) with MCP↔host path rebasing.
-- [x] Dropped `VOLUME ["/workspace"]` from the image (no orphaned anonymous volumes).
-
----
-
 ## License
 
-Choose a license (MIT recommended for MCP servers) and add a `LICENSE` file.
+MIT — see [LICENSE](LICENSE).
 
 ---
 

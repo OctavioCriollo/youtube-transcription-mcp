@@ -15,7 +15,5 @@ __pycache__
 docs/
 tests/
 README.md
-docker-compose.snippet.yml
-openclaw.json.example
 *.md
 workspace/

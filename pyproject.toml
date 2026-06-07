@@ -4,11 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "youtube-transcription-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server that transcribes YouTube videos via a Groq → ElevenLabs → captions fallback chain."
 requires-python = ">=3.11"
 readme = "README.md"
 authors = [{ name = "Octavio Criollo" }]
+license = { text = "MIT" }
 # Floors raised to the 2026-era versions we actually run/test (verified 2026-06-04).
 # Still ">=" (not pinned) so newer is allowed; this just stops a clean install from
 # resolving to an ancient, untested version. Exact reproducibility is the lockfile's job.
