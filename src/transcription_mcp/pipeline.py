@@ -20,6 +20,8 @@ from transcription_engine.pipeline import (
 from transcription_engine.providers import ELEVENLABS_PROVIDER, GROQ_PROVIDER, LOCAL_PROVIDER
 from transcription_engine.storage import FilesystemStorage, item_id_for_file, item_id_for_url
 from transcription_engine.youtube import YtDlpYoutubeDownloader
+
+from .retry_policy import ErrorClass, backoff_seconds, classify_exception, max_retries_for
 from transcription_engine.models import CanonicalTranscript, Segment, SubtitleCue
 from transcription_engine.quality import evaluate_quality
 from transcription_engine.subtitles import SubtitleConfig
@@ -317,27 +319,61 @@ def _transcribe_url_chain(
             method=provider,
             failed_attempts=failed_attempts.copy() or None,
         )
-        try:
-            run_dir = engine_transcribe_youtube(
-                url,
-                storage_dir=workspace_dir / STORAGE_DIR_NAME,
-                provider=provider,
-                language=language,
-                diarize=diarize if provider == ELEVENLABS_PROVIDER else False,
-                num_speakers=num_speakers if provider == ELEVENLABS_PROVIDER else None,
-                youtube_downloader=youtube_downloader,
-                progress=False,
-            )
-        except Exception as exc:  # noqa: BLE001
-            failed_attempts[provider] = _describe_exception(exc)
-            _emit_status(
-                status_callback,
-                stage=f"{provider}_failed",
-                message=failed_attempts[provider],
-                method=provider,
-                failed_attempts=failed_attempts.copy(),
-            )
-            logger.warning("%s transcription via %s failed: %s", source_kind, provider, failed_attempts[provider])
+        run_dir = None
+        attempt = 0
+        while True:
+            try:
+                run_dir = engine_transcribe_youtube(
+                    url,
+                    storage_dir=workspace_dir / STORAGE_DIR_NAME,
+                    provider=provider,
+                    language=language,
+                    diarize=diarize if provider == ELEVENLABS_PROVIDER else False,
+                    num_speakers=num_speakers if provider == ELEVENLABS_PROVIDER else None,
+                    youtube_downloader=youtube_downloader,
+                    progress=False,
+                )
+                break
+            except Exception as exc:  # noqa: BLE001
+                # Corrective item 3: classify before deciding. Transient and
+                # rate-limit errors earn bounded same-tier retries; blocked
+                # and fatal errors escalate immediately. This keeps cheap
+                # tiers alive instead of escalating (Groq -> ElevenLabs is
+                # ~5x cost) over errors that resolve themselves in seconds.
+                error_class = classify_exception(exc)
+                attempt += 1
+                if attempt <= max_retries_for(error_class):
+                    wait_s = backoff_seconds(error_class, attempt)
+                    _emit_status(
+                        status_callback,
+                        stage=f"{provider}_retrying",
+                        message=(
+                            f"{error_class.value} error on {provider} "
+                            f"(attempt {attempt}), retrying in {wait_s:.0f}s: "
+                            f"{_describe_exception(exc)}"
+                        ),
+                        method=provider,
+                        failed_attempts=failed_attempts.copy() or None,
+                    )
+                    logger.warning(
+                        "%s via %s hit %s error (attempt %d), retrying in %.0fs: %s",
+                        source_kind, provider, error_class.value, attempt, wait_s, exc,
+                    )
+                    _retry_sleep(wait_s)
+                    continue
+                failed_attempts[provider] = (
+                    f"[{error_class.value}] {_describe_exception(exc)}"
+                )
+                _emit_status(
+                    status_callback,
+                    stage=f"{provider}_failed",
+                    message=failed_attempts[provider],
+                    method=provider,
+                    failed_attempts=failed_attempts.copy(),
+                )
+                logger.warning("%s transcription via %s failed: %s", source_kind, provider, failed_attempts[provider])
+                break
+        if run_dir is None:
             continue
 
         return _successful_result(
@@ -681,6 +717,13 @@ def _cache_fresh(path: Path, *, cache_ttl_hours: float) -> bool:
 
 def _age_seconds(path: Path) -> float:
     return datetime.now(UTC).timestamp() - path.stat().st_mtime
+
+
+def _retry_sleep(seconds: float) -> None:
+    """Isolated so tests can patch it out; sleeping in tests is misery."""
+    import time
+
+    time.sleep(seconds)
 
 
 def _youtube_downloader(
