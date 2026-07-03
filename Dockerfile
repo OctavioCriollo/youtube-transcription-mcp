@@ -16,6 +16,16 @@ COPY src/ ./src/
 
 RUN uv sync --frozen --no-dev --no-editable --compile-bytecode
 
+# yt-dlp freshness is an operational requirement (YouTube breaks extractors
+# every few weeks; stale extractors surface as bogus 403s). On top of the
+# frozen, reproducible sync we bump ONLY yt-dlp to the latest release,
+# including nightly pre-releases. The entrypoint repeats this refresh at
+# container start, so long-lived images stay current between rebuilds.
+RUN uv pip install --python .venv/bin/python --prerelease=allow --upgrade yt-dlp
+
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 ENV WORKSPACE_DIR=/workspace \
     MCP_HOST=0.0.0.0 \
     MCP_PORT=8000 \
@@ -39,4 +49,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=5 \
 url='http://127.0.0.1:'+os.environ.get('MCP_PORT','8000')+'/health'; \
 sys.exit(0 if urllib.request.urlopen(url, timeout=4).status==200 else 1)" || exit 1
 
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["python", "-m", "transcription_mcp.server"]
