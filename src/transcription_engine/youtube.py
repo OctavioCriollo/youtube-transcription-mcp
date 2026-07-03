@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+import os
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,9 +30,32 @@ class YtDlpYoutubeDownloader:
         *,
         cookies_file: Path | None = None,
         proxy: str | None = None,
+        player_clients: Sequence[str] | None = None,
+        pot_provider_url: str | None = None,
     ) -> None:
         self.cookies_file = Path(cookies_file).expanduser().resolve() if cookies_file else None
         self.proxy = proxy.strip() if proxy else None
+        # Datacenter-IP hardening. Both fall back to the environment so every
+        # construction site (MCP-configured or bare default in the engine
+        # pipeline) picks them up without threading extra parameters through
+        # each layer. Explicit constructor arguments still win, for tests and
+        # programmatic use.
+        #   YT_PLAYER_CLIENTS   comma-separated yt-dlp player clients to try
+        #                       (e.g. "tv,web_safari,mweb"). Rotating clients
+        #                       sidesteps per-client blocks and PO-token
+        #                       requirements that differ between clients.
+        #   YT_POT_PROVIDER_URL base URL of a bgutil-ytdlp-pot-provider
+        #                       sidecar (e.g. "http://bgutil-pot:4416").
+        #                       Requires the bgutil-ytdlp-pot-provider plugin
+        #                       to be installed (done in the Docker image).
+        if player_clients is None:
+            raw = os.environ.get("YT_PLAYER_CLIENTS", "")
+            parsed = tuple(part.strip() for part in raw.split(",") if part.strip())
+            player_clients = parsed or None
+        if pot_provider_url is None:
+            pot_provider_url = os.environ.get("YT_POT_PROVIDER_URL", "").strip() or None
+        self.player_clients = tuple(player_clients) if player_clients else None
+        self.pot_provider_url = pot_provider_url
 
     def download_audio(
         self,
@@ -66,6 +90,13 @@ class YtDlpYoutubeDownloader:
             options["cookiefile"] = str(self.cookies_file)
         if self.proxy:
             options["proxy"] = self.proxy
+        extractor_args: dict[str, dict[str, list[str]]] = {}
+        if self.player_clients:
+            extractor_args["youtube"] = {"player_client": list(self.player_clients)}
+        if self.pot_provider_url:
+            extractor_args["youtubepot-bgutilhttp"] = {"base_url": [self.pot_provider_url]}
+        if extractor_args:
+            options["extractor_args"] = extractor_args
         try:
             with yt_dlp.YoutubeDL(options) as ydl:
                 info = ydl.extract_info(url, download=True)

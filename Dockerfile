@@ -22,6 +22,10 @@ RUN uv sync --frozen --no-dev --no-editable --compile-bytecode
 # including nightly pre-releases. The entrypoint repeats this refresh at
 # container start, so long-lived images stay current between rebuilds.
 RUN uv pip install --python .venv/bin/python --prerelease=allow --upgrade yt-dlp
+# yt-dlp plugin that fetches proof-of-origin (PO) tokens from a
+# bgutil-ytdlp-pot-provider sidecar. Inert unless YT_POT_PROVIDER_URL points
+# at a running sidecar, so it is safe to ship in every image.
+RUN uv pip install --python .venv/bin/python --upgrade bgutil-ytdlp-pot-provider
 
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
