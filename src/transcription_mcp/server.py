@@ -38,6 +38,8 @@ def _register_health_route(mcp: FastMCP, cfg: Config) -> None:
         try:
             from transcription_mcp.jobs import count_active_jobs
 
+            from transcription_mcp.circuit_breaker import snapshot as breaker_snapshot
+
             cfg.ensure_directories()
             active = count_active_jobs(workspace_dir=cfg.workspace_dir)
             return JSONResponse(
@@ -46,6 +48,9 @@ def _register_health_route(mcp: FastMCP, cfg: Config) -> None:
                     "transport": cfg.transport,
                     "workspace_dir": str(cfg.workspace_dir),
                     "active_jobs": active,
+                    # Item 4 observability: per-provider breaker state and
+                    # success/failure totals since last workspace reset.
+                    "providers": breaker_snapshot(cfg.workspace_dir),
                 }
             )
         except Exception as exc:  # noqa: BLE001

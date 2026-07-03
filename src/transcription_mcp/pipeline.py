@@ -21,6 +21,7 @@ from transcription_engine.providers import ELEVENLABS_PROVIDER, GROQ_PROVIDER, L
 from transcription_engine.storage import FilesystemStorage, item_id_for_file, item_id_for_url
 from transcription_engine.youtube import YtDlpYoutubeDownloader
 
+from . import circuit_breaker
 from .retry_policy import ErrorClass, backoff_seconds, classify_exception, max_retries_for
 from transcription_engine.models import CanonicalTranscript, Segment, SubtitleCue
 from transcription_engine.quality import evaluate_quality
@@ -201,6 +202,22 @@ def transcribe_file_sync(
         if _skip_for_diarization(provider, diarize=diarize, num_speakers=num_speakers):
             failed_attempts[provider] = "Skipped: provider does not support diarization."
             continue
+
+        breaker_wait = circuit_breaker.seconds_remaining(workspace_dir, provider)
+        if breaker_wait > 0:
+            failed_attempts[provider] = (
+                f"[breaker_open] Skipped after repeated blocked failures; "
+                f"cooldown {breaker_wait:.0f}s remaining."
+            )
+            _emit_status(
+                status_callback,
+                stage=f"{provider}_skipped",
+                message=failed_attempts[provider],
+                method=provider,
+                failed_attempts=failed_attempts.copy(),
+            )
+            logger.warning("%s skipped by circuit breaker (%.0fs remaining)", provider, breaker_wait)
+            continue
         _emit_status(
             status_callback,
             stage=f"{provider}_started",
@@ -312,6 +329,22 @@ def _transcribe_url_chain(
             failed_attempts[provider] = "Skipped: provider does not support diarization."
             continue
 
+        breaker_wait = circuit_breaker.seconds_remaining(workspace_dir, provider)
+        if breaker_wait > 0:
+            failed_attempts[provider] = (
+                f"[breaker_open] Skipped after repeated blocked failures; "
+                f"cooldown {breaker_wait:.0f}s remaining."
+            )
+            _emit_status(
+                status_callback,
+                stage=f"{provider}_skipped",
+                message=failed_attempts[provider],
+                method=provider,
+                failed_attempts=failed_attempts.copy(),
+            )
+            logger.warning("%s skipped by circuit breaker (%.0fs remaining)", provider, breaker_wait)
+            continue
+
         _emit_status(
             status_callback,
             stage=f"{provider}_started",
@@ -361,6 +394,17 @@ def _transcribe_url_chain(
                     )
                     _retry_sleep(wait_s)
                     continue
+                if error_class is ErrorClass.BLOCKED:
+                    opened_for = circuit_breaker.record_blocked_failure(
+                        workspace_dir, provider
+                    )
+                    if opened_for > 0:
+                        logger.warning(
+                            "circuit breaker OPENED for %s (%.0fs cooldown)",
+                            provider, opened_for,
+                        )
+                else:
+                    circuit_breaker.record_other_failure(workspace_dir, provider)
                 failed_attempts[provider] = (
                     f"[{error_class.value}] {_describe_exception(exc)}"
                 )
@@ -375,6 +419,7 @@ def _transcribe_url_chain(
                 break
         if run_dir is None:
             continue
+        circuit_breaker.record_success(workspace_dir, provider)
 
         return _successful_result(
             run_dir=run_dir,
