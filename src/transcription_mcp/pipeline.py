@@ -408,6 +408,12 @@ def _transcribe_url_chain(
                 failed_attempts[provider] = (
                     f"[{error_class.value}] {_describe_exception(exc)}"
                 )
+                _mark_abandoned_engine_run(
+                    workspace_dir=workspace_dir,
+                    source_url=url,
+                    provider=provider,
+                    error=failed_attempts[provider],
+                )
                 _emit_status(
                     status_callback,
                     stage=f"{provider}_failed",
@@ -769,6 +775,64 @@ def _retry_sleep(seconds: float) -> None:
     import time
 
     time.sleep(seconds)
+
+
+def _mark_abandoned_engine_run(
+    *,
+    workspace_dir: Path,
+    source_url: str,
+    provider: str,
+    error: str,
+) -> None:
+    """Best-effort: finalize the run-state a failed provider attempt left behind.
+
+    Engine flows write run-state.json with status "running" up front and only
+    flip it on success, so an exception (e.g. yt-dlp blocked by YouTube) leaves
+    a forever-"running" run. That misleads status readers such as
+    latest_engine_status, which can report the dead attempt as live progress.
+    Marking it failed keeps reporting truthful; resume matching is unaffected
+    because _find_resumable_run compares criteria keys, never status.
+
+    URL sources only: file sources would require re-hashing the file here just
+    to locate the item, which is not worth it for a cosmetic state fix.
+    """
+    try:
+        runs_dir = (
+            workspace_dir / STORAGE_DIR_NAME / "items" / item_id_for_url(source_url) / "runs"
+        )
+        if not runs_dir.is_dir():
+            return
+        for run_dir in sorted(
+            (path for path in runs_dir.iterdir() if path.is_dir()),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        ):
+            if (run_dir / "run.json").exists():
+                continue  # finalized successfully; not ours
+            state_path = run_dir / "run-state.json"
+            if not state_path.exists():
+                continue
+            try:
+                state = _read_json(state_path)
+            except (OSError, json.JSONDecodeError):
+                continue
+            if str(state.get("status") or "") != "running":
+                continue
+            if str(state.get("provider") or "") != provider:
+                continue
+            if state.get("source_url") and state["source_url"] != source_url:
+                continue
+            state_path.write_text(
+                json.dumps(
+                    {**state, "status": "failed", "error": error},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            return
+    except OSError:
+        logger.exception("could not finalize abandoned engine run state")
 
 
 def _youtube_downloader(

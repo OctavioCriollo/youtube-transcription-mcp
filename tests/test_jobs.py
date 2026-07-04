@@ -32,7 +32,7 @@ def test_start_transcription_job_persists_request_and_spawns_worker(monkeypatch,
     assert request["language"] == "es"
     assert job["status"] == "running"
     assert job["worker_pid"] == 4321
-    assert status["recommended_next_tool"] == "get_transcription_status"
+    assert status["recommended_next_tool"] == "watch_transcription"
     assert status["recommended_poll_seconds"] == 20
     assert status["progress_percent"] == 2
     assert "user_visible_message" in status

@@ -68,6 +68,11 @@ class Config:
     ytdlp_cookies_file: Path | None
     ytdlp_proxy: str | None
     cache_ttl_hours: float | None
+    # How long the synchronous transcribe_* tools wait for the underlying job
+    # before handing off to watch_transcription. Keep it BELOW the MCP client's
+    # tool-call timeout (gateways commonly use 60s), or the handoff never
+    # reaches the agent and the call dies as a client-side timeout instead.
+    sync_tool_budget_seconds: float
     max_concurrent_jobs: int
     job_ttl_hours: float | None
     job_stale_seconds: float
@@ -134,6 +139,9 @@ class Config:
             ytdlp_cookies_file=cookies_file,
             ytdlp_proxy=_optional_string("YT_PROXY"),
             cache_ttl_hours=_optional_float_env("MCP_CACHE_TTL_HOURS", default=24.0),
+            sync_tool_budget_seconds=(
+                _optional_float_env("MCP_SYNC_TOOL_BUDGET_S", default=50.0) or 50.0
+            ),
             max_concurrent_jobs=_int_env("MCP_MAX_CONCURRENT_JOBS", default=2, minimum=1),
             job_ttl_hours=_optional_float_env("MCP_JOB_TTL_HOURS", default=168.0),
             job_stale_seconds=_optional_float_env(

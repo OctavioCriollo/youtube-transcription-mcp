@@ -71,6 +71,35 @@ def start_transcription_job(
         raise FileNotFoundError(Path(source).expanduser())
 
     cleanup_expired_jobs(workspace_dir=workspace_dir, ttl_hours=job_ttl_hours)
+
+    # Dedup guard: an ACTIVE job for the same source and options is reused
+    # instead of spawning a second pipeline. Impatient agents otherwise start a
+    # duplicate "just in case" and pay the provider twice for the same audio.
+    duplicate = _find_active_duplicate(
+        workspace_dir=workspace_dir,
+        source=source,
+        source_type=source_type,
+        language=language,
+        diarize=diarize,
+        num_speakers=num_speakers,
+    )
+    if duplicate is not None:
+        dup_dir, dup_job = duplicate
+        public = _public_job(dup_dir, dup_job)
+        public["deduplicated"] = True
+        public["user_visible_message"] = (
+            f"A transcription job for this exact source is already active "
+            f"(run_id {dup_job.get('run_id')}); reusing it instead of starting "
+            f"a duplicate. " + str(public.get("user_visible_message") or "")
+        ).strip()
+        public["agent_instructions"] = [
+            "This source is ALREADY being transcribed; no new job was started.",
+            "Do not retry with another transcribe tool - that would duplicate provider cost.",
+            "Follow this run_id with watch_transcription until it completes, then call "
+            "get_transcription_result.",
+        ]
+        return public
+
     active_jobs = count_active_jobs(workspace_dir=workspace_dir)
     if active_jobs >= max_concurrent_jobs:
         raise RuntimeError(
@@ -202,6 +231,25 @@ async def watch_transcription_job(
             if not terminal:
                 # Keep the agent in the watch loop instead of yielding.
                 result["recommended_next_tool"] = "watch_transcription"
+            if not result["changed"]:
+                # An unchanged long-poll is the moment agents panic and start
+                # duplicate jobs. Say explicitly that quiet != stuck.
+                heartbeat_age = result.get("heartbeat_age_seconds")
+                if isinstance(heartbeat_age, (int, float)) and heartbeat_age <= 30:
+                    liveness = (
+                        f"the worker is alive (heartbeat {int(heartbeat_age)}s ago)"
+                    )
+                else:
+                    liveness = (
+                        "if the worker heartbeat stays silent the job will be marked "
+                        "stale_failed automatically - no manual restart is needed"
+                    )
+                result["note"] = (
+                    f"No new milestone within {timeout:.0f}s, but {liveness}. This is "
+                    "normal while a provider processes a long file. Call "
+                    "watch_transcription again with this revision; do NOT start a "
+                    "duplicate transcription."
+                )
             return result
         await anyio.sleep(WATCH_POLL_INTERVAL_SECONDS)
 
@@ -415,6 +463,122 @@ def count_active_jobs(*, workspace_dir: Path) -> int:
         if pid is None or _is_pid_alive(pid):
             count += 1
     return count
+
+
+def _find_active_duplicate(
+    *,
+    workspace_dir: Path,
+    source: str,
+    source_type: str,
+    language: str | None,
+    diarize: bool,
+    num_speakers: int | None,
+) -> tuple[Path, dict[str, Any]] | None:
+    """Return the newest ACTIVE job that would transcribe the same thing.
+
+    Identity matches the engine's own storage identity: URL sources compare by
+    item_id_for_url (same hash the cache uses), file sources by resolved path.
+    Options must match too - a diarized request is NOT a duplicate of a plain
+    one. Terminal, stale, and dead-worker jobs never count.
+    """
+    jobs_root = Path(workspace_dir) / "mcp-jobs"
+    if not jobs_root.is_dir():
+        return None
+    if source_type == "file":
+        source_key = str(Path(source).expanduser().resolve())
+    else:
+        source_key = item_id_for_url(source)
+
+    # run_ids embed a UTC timestamp, so reverse name order == newest first.
+    for job_dir in sorted(
+        (path for path in jobs_root.iterdir() if path.is_dir()),
+        key=lambda path: path.name,
+        reverse=True,
+    ):
+        job = _read_json_optional(job_dir / "job.json")
+        if not job or job.get("status") in TERMINAL_STATUSES:
+            continue
+        if _is_job_stale(job):
+            continue
+        pid = _int_or_none(job.get("worker_pid"))
+        if pid is not None and not _is_pid_alive(pid):
+            continue
+        if str(job.get("source_type") or "youtube") != source_type:
+            continue
+        candidate_source = str(job.get("source") or job.get("url") or "")
+        if not candidate_source:
+            continue
+        if source_type == "file":
+            candidate_key = str(Path(candidate_source).expanduser().resolve())
+        else:
+            candidate_key = item_id_for_url(candidate_source)
+        if candidate_key != source_key:
+            continue
+        if job.get("language") != language:
+            continue
+        if bool(job.get("diarize", False)) != bool(diarize):
+            continue
+        if job.get("num_speakers") != num_speakers:
+            continue
+        return job_dir, job
+    return None
+
+
+async def run_transcription_job_with_budget(
+    *,
+    budget_seconds: float,
+    workspace_dir: Path,
+    **start_kwargs: Any,
+) -> dict[str, Any]:
+    """Run a transcription as a background job, waiting up to budget_seconds.
+
+    This is the engine behind the synchronous transcribe_* tools. The old
+    behavior blocked the tool call for the whole pipeline; on long sources the
+    MCP client timed out first, the agent read that as a failure, and the
+    orphaned server-side run kept billing the provider. Instead: start (or
+    dedup onto) a job, watch it up to the budget, and either return the final
+    result or hand the still-running job off to watch_transcription.
+    """
+    status = start_transcription_job(workspace_dir=workspace_dir, **start_kwargs)
+    run_id = str(status["run_id"])
+    deadline = time.monotonic() + max(5.0, float(budget_seconds))
+    revision = _int_or_none(status.get("revision"))
+    terminal = str(status.get("status")) in TERMINAL_STATUSES
+
+    while not terminal:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        status = await watch_transcription_job(
+            run_id=run_id,
+            workspace_dir=workspace_dir,
+            since_revision=revision,
+            timeout_seconds=min(remaining, WATCH_MAX_TIMEOUT_SECONDS),
+        )
+        revision = _int_or_none(status.get("revision"))
+        terminal = bool(status.get("terminal"))
+
+    if terminal:
+        # Completed AND failed/canceled both flow through the result contract,
+        # which already carries agent guidance for each terminal state.
+        return get_transcription_job_result(run_id=run_id, workspace_dir=workspace_dir)
+
+    handoff = dict(status)
+    handoff["sync_budget_exceeded"] = True
+    handoff["recommended_next_tool"] = "watch_transcription"
+    handoff["user_visible_message"] = (
+        f"The transcription needs more than {budget_seconds:.0f}s and continues in "
+        f"the background as job {run_id}. "
+        + str(handoff.get("user_visible_message") or "")
+    ).strip()
+    handoff["agent_instructions"] = [
+        "The job is STILL RUNNING in the background; this is a handoff, not a failure.",
+        "Do NOT call a transcribe tool again for this source - that would duplicate "
+        "provider cost.",
+        "Follow this run_id with watch_transcription (pass the returned revision as "
+        "since_revision) until terminal, then call get_transcription_result.",
+    ]
+    return handoff
 
 
 def get_job_dir(*, workspace_dir: Path, run_id: str) -> Path:
@@ -652,6 +816,20 @@ def _public_job(job_dir: Path, job: dict[str, Any]) -> dict[str, Any]:
     public = {key: value for key, value in job.items() if key in public_keys}
     public["job_dir"] = str(job_dir)
     public["result_available"] = bool((job_dir / "result.json").exists())
+    # Liveness signals for non-terminal jobs. Agents cannot see the worker
+    # process, so without these a long quiet provider stage (identical
+    # message, frozen progress) is indistinguishable from a hang - and
+    # impatient agents respond by starting duplicate jobs.
+    if public.get("status") not in TERMINAL_STATUSES:
+        now_ts = datetime.now(UTC).timestamp()
+        started_ts = _parse_iso_timestamp(
+            str(job.get("started_at") or job.get("created_at") or "")
+        )
+        if started_ts is not None:
+            public["elapsed_seconds"] = max(0, round(now_ts - started_ts))
+        heartbeat_ts = _parse_iso_timestamp(str(job.get("heartbeat_at") or ""))
+        if heartbeat_ts is not None:
+            public["heartbeat_age_seconds"] = max(0, round(now_ts - heartbeat_ts))
     return _with_agent_guidance(public, response_type="status")
 
 
@@ -673,12 +851,16 @@ def _agent_guidance(payload: dict[str, Any], *, response_type: str) -> dict[str,
     if status in {"queued", "running", "canceling"}:
         return {
             "user_visible_message": _running_user_message(payload),
-            "recommended_next_tool": "get_transcription_status",
+            "recommended_next_tool": "watch_transcription",
             "recommended_poll_seconds": DEFAULT_RECOMMENDED_POLL_SECONDS,
             "agent_instructions": [
                 "Tell the user the transcription is still processing.",
-                "Keep the run_id and call get_transcription_status again after "
-                "recommended_poll_seconds.",
+                "Call watch_transcription with this run_id and the last `revision` you "
+                "saw; it waits server-side and returns on the next milestone.",
+                "The job is healthy while heartbeat_age_seconds stays under ~30; an "
+                "unchanged stage does NOT mean it is stuck.",
+                "Do NOT start another transcription for the same source while this job "
+                "is active - that duplicates provider cost.",
                 "When status becomes completed, call get_transcription_result before "
                 "answering with the transcript.",
             ],
@@ -818,6 +1000,21 @@ def _running_user_message(payload: dict[str, Any]) -> str:
     parts = [f"Transcription job {run_id} is {status} ({stage}).", message]
     if progress_percent is not None:
         parts.append(f"Approximate progress: {progress_percent}%.")
+
+    elapsed = payload.get("elapsed_seconds")
+    heartbeat_age = payload.get("heartbeat_age_seconds")
+    if elapsed is not None:
+        parts.append(f"Elapsed: {int(elapsed)}s.")
+    if heartbeat_age is not None:
+        if heartbeat_age <= 30:
+            parts.append(f"The worker is alive (heartbeat {int(heartbeat_age)}s ago).")
+        else:
+            parts.append(f"Last worker heartbeat was {int(heartbeat_age)}s ago.")
+    if isinstance(elapsed, (int, float)) and elapsed >= 30:
+        parts.append(
+            "Long sources can spend several minutes inside one provider stage with "
+            "no visible change; that is normal - keep watching instead of restarting."
+        )
     return " ".join(parts)
 
 

@@ -6,7 +6,6 @@ Treat it as UX copy, not as a code comment.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Annotated, Any
 
 from mcp.server.fastmcp import FastMCP
@@ -19,19 +18,15 @@ from transcription_mcp.jobs import (
     get_transcription_job_artifact,
     get_transcription_job_result,
     get_transcription_job_status,
+    run_transcription_job_with_budget,
     start_transcription_job,
     watch_transcription_job,
-)
-from transcription_mcp.pipeline import (
-    transcribe_file_sync,
-    transcribe_media_url_sync,
-    transcribe_youtube_sync,
 )
 
 
 def register_tools(mcp: FastMCP, config: Config) -> None:
     @mcp.tool()
-    def transcribe_youtube(
+    async def transcribe_youtube(
         url: Annotated[
             str,
             Field(description="Full YouTube URL to transcribe."),
@@ -49,17 +44,22 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             Field(description="Optional expected number of speakers for diarization."),
         ] = None,
     ) -> dict[str, Any]:
-        """Synchronously transcribe a YouTube video.
+        """Transcribe a YouTube video, waiting up to the server's sync budget.
 
-        Use for short videos or when a blocking call is acceptable. For long
-        videos, prefer `start_youtube_transcription` plus status polling.
+        Short/cached videos finish within the budget and return the final
+        result directly (use result.transcript). Longer videos hand off: the
+        response carries sync_budget_exceeded=true and a run_id while the job
+        KEEPS RUNNING in the background - follow it with watch_transcription;
+        do NOT call this tool again for the same source (duplicate cost).
 
         The provider order is decided by the server (default Groq -> ElevenLabs ->
         YouTube captions); it is not a client option. The response reports the
         order actually used in `provider_order_effective`.
         """
-        return transcribe_youtube_sync(
-            url=url,
+        return await run_transcription_job_with_budget(
+            budget_seconds=config.sync_tool_budget_seconds,
+            source=url,
+            source_type="youtube",
             language=language,
             workspace_dir=config.workspace_dir,
             provider_order=config.youtube_provider_order,
@@ -68,10 +68,12 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             ytdlp_cookies_file=config.ytdlp_cookies_file,
             ytdlp_proxy=config.ytdlp_proxy,
             cache_ttl_hours=config.cache_ttl_hours,
+            max_concurrent_jobs=config.max_concurrent_jobs,
+            job_ttl_hours=config.job_ttl_hours,
         )
 
     @mcp.tool()
-    def transcribe_media_url(
+    async def transcribe_media_url(
         url: Annotated[
             str,
             Field(description="Public media URL supported by yt-dlp or a direct provider source_url."),
@@ -89,14 +91,19 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             Field(description="Optional expected number of speakers for diarization."),
         ] = None,
     ) -> dict[str, Any]:
-        """Synchronously transcribe a public media URL.
+        """Transcribe a public media URL, waiting up to the server's sync budget.
 
-        This is not the YouTube captions fallback path; it uses audio providers
-        only. Prefer the async tool for long URLs. Provider order is server-side;
+        Audio providers only (no YouTube captions fallback). Short/cached
+        sources return the final result directly (use result.transcript);
+        longer ones hand off with sync_budget_exceeded=true and a run_id while
+        the job KEEPS RUNNING - follow it with watch_transcription; do NOT call
+        this tool again for the same source. Provider order is server-side;
         see `provider_order_effective` in the response.
         """
-        return transcribe_media_url_sync(
-            url=url,
+        return await run_transcription_job_with_budget(
+            budget_seconds=config.sync_tool_budget_seconds,
+            source=url,
+            source_type="media_url",
             language=language,
             workspace_dir=config.workspace_dir,
             provider_order=config.media_provider_order,
@@ -105,10 +112,12 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             ytdlp_cookies_file=config.ytdlp_cookies_file,
             ytdlp_proxy=config.ytdlp_proxy,
             cache_ttl_hours=config.cache_ttl_hours,
+            max_concurrent_jobs=config.max_concurrent_jobs,
+            job_ttl_hours=config.job_ttl_hours,
         )
 
     @mcp.tool()
-    def transcribe_file(
+    async def transcribe_file(
         file_path: Annotated[
             str,
             Field(description="Absolute path to a local audio or video file visible to the MCP host."),
@@ -126,18 +135,26 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             Field(description="Optional expected number of speakers for diarization."),
         ] = None,
     ) -> dict[str, Any]:
-        """Synchronously transcribe a local file visible to the MCP host.
+        """Transcribe a local file, waiting up to the server's sync budget.
 
-        Provider order is server-side; see `provider_order_effective` in the response.
+        Short/cached files return the final result directly (use
+        result.transcript); longer ones hand off with sync_budget_exceeded=true
+        and a run_id while the job KEEPS RUNNING - follow it with
+        watch_transcription; do NOT call this tool again for the same file.
+        Provider order is server-side; see `provider_order_effective`.
         """
-        return transcribe_file_sync(
-            file_path=Path(file_path),
+        return await run_transcription_job_with_budget(
+            budget_seconds=config.sync_tool_budget_seconds,
+            source=file_path,
+            source_type="file",
             language=language,
             workspace_dir=config.workspace_dir,
             provider_order=config.file_provider_order,
             diarize=diarize,
             num_speakers=num_speakers,
             cache_ttl_hours=config.cache_ttl_hours,
+            max_concurrent_jobs=config.max_concurrent_jobs,
+            job_ttl_hours=config.job_ttl_hours,
         )
 
     @mcp.tool()
@@ -161,8 +178,10 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
     ) -> dict[str, Any]:
         """Start a background YouTube transcription job and return a run_id.
 
-        Agent workflow: show user_visible_message, keep run_id, and follow
-        recommended_next_tool plus recommended_poll_seconds from the response.
+        If an identical job is already active, its run_id is returned instead
+        (deduplicated=true) - never start a second job for the same source.
+        Agent workflow: show user_visible_message, keep run_id, and follow it
+        with watch_transcription until terminal.
         Provider order is server-side; the result reports `provider_order_effective`.
         """
         return start_transcription_job(
@@ -201,8 +220,10 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
     ) -> dict[str, Any]:
         """Start a background media URL transcription job and return a run_id.
 
-        Agent workflow: show user_visible_message, keep run_id, and follow
-        recommended_next_tool plus recommended_poll_seconds from the response.
+        If an identical job is already active, its run_id is returned instead
+        (deduplicated=true) - never start a second job for the same source.
+        Agent workflow: show user_visible_message, keep run_id, and follow it
+        with watch_transcription until terminal.
         Provider order is server-side; the result reports `provider_order_effective`.
         """
         return start_transcription_job(
@@ -241,8 +262,10 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
     ) -> dict[str, Any]:
         """Start a background local file transcription job and return a run_id.
 
-        Agent workflow: show user_visible_message, keep run_id, and follow
-        recommended_next_tool plus recommended_poll_seconds from the response.
+        If an identical job is already active, its run_id is returned instead
+        (deduplicated=true) - never start a second job for the same file.
+        Agent workflow: show user_visible_message, keep run_id, and follow it
+        with watch_transcription until terminal.
         Provider order is server-side; the result reports `provider_order_effective`.
         """
         return start_transcription_job(
@@ -409,9 +432,13 @@ Source type: {source_type}
 Workflow:
 1. For YouTube URLs, call start_youtube_transcription. For other media URLs, call
    start_media_url_transcription. For local files, call start_file_transcription.
+   If the response has deduplicated=true, an identical job was already active and
+   you are now following it - that is success, not an error.
 2. Immediately tell the user the job started using user_visible_message and keep run_id.
-3. While status is queued, running, or canceling, call get_transcription_status after
-   recommended_poll_seconds and report user_visible_message to the user.
+3. While the job is not terminal, loop watch_transcription (pass the last `revision` as
+   since_revision) and report user_visible_message on each change. An unchanged watch
+   with a fresh heartbeat means the job is healthy - keep watching. NEVER start another
+   transcription for the same source while this one is active.
 4. When status is completed, call get_transcription_result with the same run_id.
 5. Use result.transcript as the main answer. Use get_transcription_artifact only if the
    user asks for subtitles, timestamps, audit data, or another listed artifact.
