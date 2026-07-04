@@ -57,6 +57,8 @@ def start_transcription_job(
     num_speakers: int | None = None,
     ytdlp_cookies_file: Path | None = None,
     ytdlp_proxy: str | None = None,
+    managed_cookies_file: Path | None = None,
+    managed_cookies_idle_ttl_s: float = 86_400.0,
     cache_ttl_hours: float | None = 24.0,
     max_concurrent_jobs: int = 2,
     job_ttl_hours: float | None = 168.0,
@@ -127,6 +129,8 @@ def start_transcription_job(
         "num_speakers": num_speakers,
         "ytdlp_cookies_file": str(ytdlp_cookies_file) if ytdlp_cookies_file else None,
         "ytdlp_proxy": ytdlp_proxy,
+        "managed_cookies_file": str(managed_cookies_file) if managed_cookies_file else None,
+        "managed_cookies_idle_ttl_s": managed_cookies_idle_ttl_s,
         "cache_ttl_hours": cache_ttl_hours,
     }
     job = {

@@ -67,6 +67,20 @@ class Config:
     http_path: str
     ytdlp_cookies_file: Path | None
     ytdlp_proxy: str | None
+    # Cookies minted by the authgate service after a human login, dropped on the
+    # shared volume. Used automatically while fresh; unlike ytdlp_cookies_file it
+    # need NOT exist at startup (it appears only after the first login).
+    managed_cookies_file: Path
+    # Sliding idle window for the managed cookies (seconds). The MCP touches the
+    # file on every successful cookie-backed download; authgate reaps it after
+    # this long without use. Mirrors AUTHGATE_COOKIE_IDLE_TTL_S on that service.
+    managed_cookies_idle_ttl_s: float
+    # Internal base URL of the authgate service (e.g. http://yt-auth:8080).
+    # Unset => remote login is not wired up and the login tools report so.
+    authgate_base_url: str | None
+    # Public base the human opens (e.g. https://host/ytauth); prepended to the
+    # relative login_path authgate returns.
+    authgate_public_login_base: str | None
     cache_ttl_hours: float | None
     # How long the synchronous transcribe_* tools wait for the underlying job
     # before handing off to watch_transcription. Keep it BELOW the MCP client's
@@ -130,6 +144,13 @@ class Config:
         if cookies_file is not None and not cookies_file.is_file():
             raise ConfigError(f"YT_COOKIES_FILE does not exist or is not a file: {cookies_file}")
 
+        managed_cookies_raw = _optional_string("MANAGED_YT_COOKIES_FILE")
+        managed_cookies_file = (
+            Path(managed_cookies_raw).expanduser()
+            if managed_cookies_raw
+            else workspace / "secrets" / "youtube-cookies.txt"
+        )
+
         return cls(
             workspace_dir=workspace,
             transport=transport,
@@ -138,6 +159,12 @@ class Config:
             http_path=http_path,
             ytdlp_cookies_file=cookies_file,
             ytdlp_proxy=_optional_string("YT_PROXY"),
+            managed_cookies_file=managed_cookies_file,
+            managed_cookies_idle_ttl_s=(
+                _optional_float_env("AUTHGATE_COOKIE_IDLE_TTL_S", default=86_400.0) or 86_400.0
+            ),
+            authgate_base_url=_optional_string("AUTHGATE_BASE_URL"),
+            authgate_public_login_base=_optional_string("AUTHGATE_PUBLIC_LOGIN_BASE"),
             cache_ttl_hours=_optional_float_env("MCP_CACHE_TTL_HOURS", default=24.0),
             sync_tool_budget_seconds=(
                 _optional_float_env("MCP_SYNC_TOOL_BUDGET_S", default=50.0) or 50.0

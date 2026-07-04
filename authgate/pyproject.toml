@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "authgate"
+version = "0.1.0"
+description = "Human-in-the-loop login gateway that mints YouTube cookies for the transcription MCP."
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.10",
+    # playwright is provided by the base Docker image (mcr.microsoft.com/playwright/python),
+    # pinned there to match the bundled browser build. It is intentionally NOT a hard
+    # dependency here so the pure-logic modules install and test without it.
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.3",
+    "ruff>=0.15",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra -q"
+
+[tool.ruff]
+line-length = 100

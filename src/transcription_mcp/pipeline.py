@@ -22,6 +22,8 @@ from transcription_engine.storage import FilesystemStorage, item_id_for_file, it
 from transcription_engine.youtube import YtDlpYoutubeDownloader
 
 from . import circuit_breaker
+from .managed_cookies import resolve_cookies_file
+from .managed_cookies import touch as _touch_managed_cookies
 from .retry_policy import ErrorClass, backoff_seconds, classify_exception, max_retries_for
 from transcription_engine.models import CanonicalTranscript, Segment, SubtitleCue
 from transcription_engine.quality import evaluate_quality
@@ -74,6 +76,8 @@ def transcribe_youtube_sync(
     num_speakers: int | None = None,
     ytdlp_cookies_file: Path | None = None,
     ytdlp_proxy: str | None = None,
+    managed_cookies_file: Path | None = None,
+    managed_cookies_idle_ttl_s: float = 86_400.0,
     cache_ttl_hours: float | None = 24.0,
     status_callback: StatusCallback | None = None,
 ) -> dict[str, Any]:
@@ -97,6 +101,11 @@ def transcribe_youtube_sync(
         )
         return cached
 
+    effective_cookies, used_managed = resolve_cookies_file(
+        explicit=ytdlp_cookies_file,
+        managed=managed_cookies_file,
+        idle_ttl_s=managed_cookies_idle_ttl_s,
+    )
     return _transcribe_url_chain(
         url=url,
         source_kind="youtube",
@@ -105,8 +114,9 @@ def transcribe_youtube_sync(
         language=language,
         diarize=diarize,
         num_speakers=num_speakers,
-        ytdlp_cookies_file=ytdlp_cookies_file,
+        ytdlp_cookies_file=effective_cookies,
         ytdlp_proxy=ytdlp_proxy,
+        managed_cookies_touch=managed_cookies_file if used_managed else None,
         allow_subtitles=True,
         status_callback=status_callback,
     )
@@ -122,6 +132,8 @@ def transcribe_media_url_sync(
     num_speakers: int | None = None,
     ytdlp_cookies_file: Path | None = None,
     ytdlp_proxy: str | None = None,
+    managed_cookies_file: Path | None = None,
+    managed_cookies_idle_ttl_s: float = 86_400.0,
     cache_ttl_hours: float | None = 24.0,
     status_callback: StatusCallback | None = None,
 ) -> dict[str, Any]:
@@ -145,6 +157,11 @@ def transcribe_media_url_sync(
         )
         return cached
 
+    effective_cookies, used_managed = resolve_cookies_file(
+        explicit=ytdlp_cookies_file,
+        managed=managed_cookies_file,
+        idle_ttl_s=managed_cookies_idle_ttl_s,
+    )
     return _transcribe_url_chain(
         url=url,
         source_kind="media_url",
@@ -153,8 +170,9 @@ def transcribe_media_url_sync(
         language=language,
         diarize=diarize,
         num_speakers=num_speakers,
-        ytdlp_cookies_file=ytdlp_cookies_file,
+        ytdlp_cookies_file=effective_cookies,
         ytdlp_proxy=ytdlp_proxy,
+        managed_cookies_touch=managed_cookies_file if used_managed else None,
         allow_subtitles=False,
         status_callback=status_callback,
     )
@@ -295,11 +313,13 @@ def _transcribe_url_chain(
     ytdlp_proxy: str | None,
     allow_subtitles: bool,
     status_callback: StatusCallback | None,
+    managed_cookies_touch: Path | None = None,
 ) -> dict[str, Any]:
     url = str(url).strip()
     if not url:
         raise ValueError("url must not be empty")
 
+    cookies_in_effect = ytdlp_cookies_file is not None
     failed_attempts: dict[str, str] = {}
     youtube_downloader = _youtube_downloader(
         cookies_file=ytdlp_cookies_file,
@@ -322,6 +342,9 @@ def _transcribe_url_chain(
                 status_callback=status_callback,
             )
             if result is not None:
+                result.update(
+                    _youtube_login_hint(failed_attempts, cookies_in_effect=cookies_in_effect)
+                )
                 return result
             continue
 
@@ -427,15 +450,22 @@ def _transcribe_url_chain(
             continue
         circuit_breaker.record_success(workspace_dir, provider)
 
-        return _successful_result(
+        # The winning provider actually downloaded with the managed cookies, so
+        # slide their idle TTL forward (keeps an active account logged in).
+        if managed_cookies_touch is not None and provider in {GROQ_PROVIDER, LOCAL_PROVIDER}:
+            _touch_managed_cookies(managed_cookies_touch)
+
+        result = _successful_result(
             run_dir=run_dir,
             method=provider,
             failed_attempts=failed_attempts,
             provider_order=providers,
             status_callback=status_callback,
         )
+        result.update(_youtube_login_hint(failed_attempts, cookies_in_effect=cookies_in_effect))
+        return result
 
-    raise _all_failed(failed_attempts)
+    raise _all_failed(failed_attempts, cookies_in_effect=cookies_in_effect)
 
 
 def _try_subtitles_fallback(
@@ -849,13 +879,48 @@ def _skip_for_diarization(provider: str, *, diarize: bool, num_speakers: int | N
     return bool(diarize or num_speakers is not None) and provider != ELEVENLABS_PROVIDER
 
 
-def _all_failed(failed_attempts: dict[str, str]) -> TranscriptionFailed:
+def _all_failed(
+    failed_attempts: dict[str, str], *, cookies_in_effect: bool = False
+) -> TranscriptionFailed:
     details = "\n".join(f"  - {provider}: {reason}" for provider, reason in failed_attempts.items())
     message = "All requested transcription methods failed."
     if details:
         message = f"{message}\n{details}"
+    hint = _youtube_login_hint(failed_attempts, cookies_in_effect=cookies_in_effect)
+    if hint:
+        message = f"{message}\n{hint['youtube_login_message']}"
     logger.error(message)
-    return TranscriptionFailed(message)
+    exc = TranscriptionFailed(message)
+    exc.youtube_login_would_help = bool(hint)  # type: ignore[attr-defined]
+    return exc
+
+
+def _youtube_login_hint(
+    failed_attempts: dict[str, str], *, cookies_in_effect: bool
+) -> dict[str, Any]:
+    """Surface a login recommendation when YouTube blocked the Groq download.
+
+    The bot-wall ("Sign in to confirm you're not a bot") stops the cheap tier
+    before PO tokens even matter; only a real session cookie clears it. If we
+    had no cookies, logging in enables the cheap tier; if we did and were still
+    blocked, they are likely stale and a fresh login helps.
+    """
+    reason = failed_attempts.get(GROQ_PROVIDER, "")
+    if "[blocked]" not in reason or "sign in to confirm" not in reason.lower():
+        return {}
+    if cookies_in_effect:
+        message = (
+            "YouTube blocked the server even with the current session cookies; they "
+            "are likely stale. A fresh login via request_youtube_login can restore "
+            "the cheaper Groq tier."
+        )
+    else:
+        message = (
+            "YouTube blocked the server's download as bot traffic. A one-time login "
+            "via request_youtube_login restores the cheaper Groq tier for ~24h of "
+            "activity; transcription still worked here via the pricier cloud tier."
+        )
+    return {"youtube_login_would_help": True, "youtube_login_message": message}
 
 
 def _emit_status(

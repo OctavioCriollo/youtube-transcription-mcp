@@ -131,6 +131,14 @@ def _run_request(
             else None
         ),
         "ytdlp_proxy": request.get("ytdlp_proxy"),
+        "managed_cookies_file": (
+            Path(str(request["managed_cookies_file"]))
+            if request.get("managed_cookies_file")
+            else None
+        ),
+        "managed_cookies_idle_ttl_s": float(
+            request.get("managed_cookies_idle_ttl_s") or 86_400.0
+        ),
     }
     if source_type == "media_url":
         return transcribe_media_url_sync(**url_common)

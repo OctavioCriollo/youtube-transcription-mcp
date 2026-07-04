@@ -5,6 +5,16 @@ July 2026 hardening effort (items 1-4, shipped in commits `c9a4922`,
 `2b44c84`, `17a3c06`, `c21516f`) but deliberately deferred. Each section
 contains enough design detail to implement without re-deriving the analysis.
 
+> **Item 8 — Remote human-in-the-loop YouTube login: SHIPPED (v0.4.0).**
+> The datacenter "Sign in to confirm you're not a bot" wall blocks the Groq
+> download before PO tokens matter; only a real session cookie clears it. The
+> `authgate/` service now mints those cookies via a human login in a
+> server-side browser (noVNC over Traefik + ForwardAuth), drops them on the
+> shared volume with a sliding 24h idle TTL, and the MCP consumes them
+> automatically and guides the agent to `request_youtube_login` when a job is
+> bot-walled. See `authgate/README.md`. Items 5 (residential proxy) and 6
+> (captions Data API) remain as complementary tiers.
+
 Context for all items: the Groq tier depends on downloading audio with yt-dlp,
 which datacenter IPs struggle with. Items 1-4 addressed extractor freshness
 (nightly auto-update), PO tokens (sidecar), error classification (bounded

@@ -11,6 +11,8 @@ from typing import Annotated, Any
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
+from transcription_mcp import youtube_login
+from transcription_mcp.authgate_client import AuthgateClient
 from transcription_mcp.config import Config
 from transcription_mcp.jobs import (
     cancel_transcription_job,
@@ -67,6 +69,8 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             num_speakers=num_speakers,
             ytdlp_cookies_file=config.ytdlp_cookies_file,
             ytdlp_proxy=config.ytdlp_proxy,
+            managed_cookies_file=config.managed_cookies_file,
+            managed_cookies_idle_ttl_s=config.managed_cookies_idle_ttl_s,
             cache_ttl_hours=config.cache_ttl_hours,
             max_concurrent_jobs=config.max_concurrent_jobs,
             job_ttl_hours=config.job_ttl_hours,
@@ -111,6 +115,8 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             num_speakers=num_speakers,
             ytdlp_cookies_file=config.ytdlp_cookies_file,
             ytdlp_proxy=config.ytdlp_proxy,
+            managed_cookies_file=config.managed_cookies_file,
+            managed_cookies_idle_ttl_s=config.managed_cookies_idle_ttl_s,
             cache_ttl_hours=config.cache_ttl_hours,
             max_concurrent_jobs=config.max_concurrent_jobs,
             job_ttl_hours=config.job_ttl_hours,
@@ -194,6 +200,8 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             num_speakers=num_speakers,
             ytdlp_cookies_file=config.ytdlp_cookies_file,
             ytdlp_proxy=config.ytdlp_proxy,
+            managed_cookies_file=config.managed_cookies_file,
+            managed_cookies_idle_ttl_s=config.managed_cookies_idle_ttl_s,
             cache_ttl_hours=config.cache_ttl_hours,
             max_concurrent_jobs=config.max_concurrent_jobs,
             job_ttl_hours=config.job_ttl_hours,
@@ -236,6 +244,8 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             num_speakers=num_speakers,
             ytdlp_cookies_file=config.ytdlp_cookies_file,
             ytdlp_proxy=config.ytdlp_proxy,
+            managed_cookies_file=config.managed_cookies_file,
+            managed_cookies_idle_ttl_s=config.managed_cookies_idle_ttl_s,
             cache_ttl_hours=config.cache_ttl_hours,
             max_concurrent_jobs=config.max_concurrent_jobs,
             job_ttl_hours=config.job_ttl_hours,
@@ -415,6 +425,42 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
         return cancel_transcription_job(
             run_id=run_id,
             workspace_dir=config.workspace_dir,
+        )
+
+    def _authgate_client() -> AuthgateClient:
+        return AuthgateClient(config.authgate_base_url)
+
+    @mcp.tool()
+    def request_youtube_login() -> dict[str, Any]:
+        """Start a remote YouTube login and get a link to send the user.
+
+        Call this when a transcription reports youtube_login_would_help=true (the
+        Groq tier was blocked as bot traffic because this server has no YouTube
+        session). It opens a browser ON THE SERVER and returns login_url: send
+        that link to the user, have them sign in with a disposable Google
+        account, then poll get_youtube_auth_status. Once authenticated the cheap
+        tier works for ~24h of activity. The user's credentials never reach you
+        or the server — they type them into the remote browser themselves.
+        """
+        return youtube_login.request_login(
+            _authgate_client(),
+            public_base=config.authgate_public_login_base,
+            managed_cookies_file=config.managed_cookies_file,
+            idle_ttl_s=config.managed_cookies_idle_ttl_s,
+        )
+
+    @mcp.tool()
+    def get_youtube_auth_status() -> dict[str, Any]:
+        """Check whether the server has a usable YouTube session.
+
+        Returns authenticated (cookies valid, cheap tier ready), awaiting_login
+        (a login link is open and the user has not finished), or needs_login
+        (ask via request_youtube_login). Poll this after sending a login link.
+        """
+        return youtube_login.auth_status(
+            _authgate_client(),
+            managed_cookies_file=config.managed_cookies_file,
+            idle_ttl_s=config.managed_cookies_idle_ttl_s,
         )
 
     @mcp.prompt(
