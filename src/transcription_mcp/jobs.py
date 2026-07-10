@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -265,6 +268,23 @@ def get_transcription_job_result(
 ) -> dict[str, Any]:
     status = get_transcription_job_status(run_id=run_id, workspace_dir=workspace_dir)
     job_dir = get_job_dir(workspace_dir=workspace_dir, run_id=run_id)
+    result_path = job_dir / "result.json"
+
+    # Disk is authoritative: if a complete result.json exists, serve it no matter
+    # what the status flag says. A worker can finish (result.json written) and
+    # then die/hang before flipping the flag; the transcript is still valid and
+    # must be delivered, not withheld behind a status that never advanced.
+    if _has_complete_result(job_dir):
+        return _with_agent_guidance(
+            {
+                "run_id": run_id,
+                "status": "completed",
+                "result_available": True,
+                "result": read_json(result_path),
+            },
+            response_type="result",
+        )
+
     if status["status"] != "completed":
         response = {
             "run_id": run_id,
@@ -283,7 +303,7 @@ def get_transcription_job_result(
             response["error"] = _read_json_optional(job_dir / "error.json")
         return _with_agent_guidance(response, response_type="result")
 
-    result_path = job_dir / "result.json"
+    # status says completed but result.json is missing/unreadable -> mark failed.
     if not result_path.exists():
         update_job_status(
             job_dir,
@@ -593,21 +613,77 @@ def get_job_dir(*, workspace_dir: Path, run_id: str) -> Path:
     return job_dir
 
 
+# Per-path in-process locks, so the worker's main and heartbeat threads never
+# interleave a read-modify-write of the same job.json.
+_THREAD_LOCKS: dict[str, threading.Lock] = {}
+_THREAD_LOCKS_GUARD = threading.Lock()
+
+
+def _thread_lock_for(path: Path) -> threading.Lock:
+    key = str(Path(path).resolve())
+    with _THREAD_LOCKS_GUARD:
+        lock = _THREAD_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _THREAD_LOCKS[key] = lock
+        return lock
+
+
+@contextlib.contextmanager
+def _job_write_lock(job_path: Path) -> Iterator[None]:
+    """Serialize the read-modify-write of a job.json.
+
+    Two layers: a process-local threading.Lock (covers the worker's two threads)
+    and a POSIX fcntl lock on a sidecar file (covers worker vs MCP-server, which
+    are separate processes). The fcntl layer is best-effort: on platforms without
+    it (Windows dev/tests) the thread lock still holds, and correctness of the
+    critical outcome no longer depends on this lock anyway (result.json on disk
+    is authoritative — see _refresh_job_status).
+    """
+    thread_lock = _thread_lock_for(job_path)
+    thread_lock.acquire()
+    fd = None
+    try:
+        try:
+            import fcntl
+
+            lock_path = job_path.with_name(job_path.name + ".lock")
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            fd = None  # best effort; the thread lock still serializes in-process
+        yield
+    finally:
+        if fd is not None:
+            try:
+                import fcntl
+
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(fd)
+        thread_lock.release()
+
+
 def update_job_status(job_dir: Path, **updates: Any) -> dict[str, Any]:
     job_path = Path(job_dir) / "job.json"
-    job = read_json(job_path) if job_path.exists() else {}
-    prev_status = job.get("status")
-    prev_stage = job.get("stage")
-    job.update({key: value for key, value in updates.items() if value is not None})
-    # Bump `revision` only on a milestone change (status or stage), NOT on every
-    # heartbeat write. watch_transcription wakes on revision changes, so this keeps
-    # it firing on real progress (stage transitions, terminal states) instead of
-    # every 2s heartbeat. progress/message still ride along in the snapshot.
-    if job.get("status") != prev_status or job.get("stage") != prev_stage:
-        job["revision"] = int(job.get("revision") or 0) + 1
-    job["updated_at"] = _now_iso()
-    write_json_atomic(job_path, job)
-    return job
+    # The read, the mutate, and the write must be one atomic unit, or a
+    # concurrent writer (heartbeat thread, server refresh) working from a stale
+    # read can clobber a milestone — e.g. flip "completed" back to "running".
+    with _job_write_lock(job_path):
+        job = read_json(job_path) if job_path.exists() else {}
+        prev_status = job.get("status")
+        prev_stage = job.get("stage")
+        job.update({key: value for key, value in updates.items() if value is not None})
+        # Bump `revision` only on a milestone change (status or stage), NOT on every
+        # heartbeat write. watch_transcription wakes on revision changes, so this keeps
+        # it firing on real progress (stage transitions, terminal states) instead of
+        # every 2s heartbeat. progress/message still ride along in the snapshot.
+        if job.get("status") != prev_status or job.get("stage") != prev_stage:
+            job["revision"] = int(job.get("revision") or 0) + 1
+        job["updated_at"] = _now_iso()
+        write_json_atomic(job_path, job)
+        return job
 
 
 def latest_engine_status(
@@ -678,13 +754,38 @@ def summarize_engine_status(report: dict[str, Any]) -> dict[str, Any]:
 def write_json_atomic(path: Path, data: dict[str, Any]) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(f"{path.name}.tmp")
-    tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp_path.replace(path)
+    # Unique tmp per writer: job.json is written by up to three writers at once
+    # (worker main thread, worker heartbeat thread, and the MCP server process
+    # via _refresh_job_status). A shared "<name>.tmp" let concurrent writes
+    # collide and clobber each other mid-rename. A per-write name makes each
+    # atomic replace independent.
+    tmp_path = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_path.replace(path)
+    finally:
+        # If replace() failed, don't leave the tmp behind.
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
 
 
 def read_json(path: Path) -> dict[str, Any]:
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _has_complete_result(job_dir: Path) -> bool:
+    """True if result.json exists and parses.
+
+    write_json_atomic renames into place, so a present result.json is complete;
+    the parse check is belt-and-suspenders against a truncated/foreign file.
+    """
+    path = Path(job_dir) / "result.json"
+    if not path.exists():
+        return False
+    try:
+        return bool(read_json(path))
+    except (OSError, json.JSONDecodeError):
+        return False
 
 
 def _new_job_dir(workspace_dir: Path) -> Path:
@@ -703,6 +804,23 @@ def _new_job_dir(workspace_dir: Path) -> Path:
 def _refresh_job_status(job_dir: Path, job: dict[str, Any]) -> dict[str, Any]:
     if job.get("status") in TERMINAL_STATUSES:
         return job
+
+    # Disk is authoritative. A complete result.json means the transcription
+    # finished — no matter whether the worker then died, hung, or had its PID
+    # reused before flipping the status. Check it FIRST, ahead of any pid or
+    # heartbeat logic, so a finished job is never lost to a false "stale" verdict
+    # (the exact failure seen on 2026-07-08: result.json complete on disk, yet
+    # the job was marked stale_failed 180s later).
+    if _has_complete_result(job_dir):
+        return update_job_status(
+            job_dir,
+            status="completed",
+            stage="completed",
+            message="Transcription completed.",
+            progress=1.0,
+            result_available=True,
+            finished_at=job.get("finished_at") or _now_iso(),
+        )
 
     report = latest_engine_status(
         workspace_dir=Path(str(job.get("workspace_dir") or job_dir.parents[1])),
@@ -725,17 +843,10 @@ def _refresh_job_status(job_dir: Path, job: dict[str, Any]) -> dict[str, Any]:
     pid_dead = bool(pid) and not _is_pid_alive(pid)
 
     if pid_dead:
-        if (job_dir / "result.json").exists():
-            job = update_job_status(
-                job_dir,
-                status="completed",
-                stage="completed",
-                message="Transcription completed.",
-                progress=1.0,
-                result_available=True,
-                finished_at=job.get("finished_at") or _now_iso(),
-            )
-        elif (job_dir / "error.json").exists():
+        # result.json was already handled above (authoritative). A dead worker
+        # with no result means it failed: surface its error.json if present,
+        # otherwise report that it exited before producing anything.
+        if (job_dir / "error.json").exists():
             error = _read_json_optional(job_dir / "error.json")
             job = update_job_status(
                 job_dir,

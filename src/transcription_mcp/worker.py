@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import sys
 import threading
-import time
 import traceback
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -170,36 +170,48 @@ def _monitor_engine_status(
     source_type: str,
     stop_event: threading.Event,
 ) -> None:
+    # Liveness must never die on a transient error. The whole loop body is
+    # guarded: a bad read or a failed engine-status parse skips this tick and
+    # tries again, instead of killing the heartbeat thread and letting the job
+    # go falsely stale. The heartbeat itself is written FIRST and
+    # unconditionally, so engine enrichment is a best-effort add-on, never a
+    # prerequisite for proving the worker is alive.
     while not stop_event.wait(2.0):
-        job = read_json(job_dir / "job.json")
-        if job.get("status") in {"completed", "failed", "canceled", "stale_failed"}:
-            return
-        # Heartbeat: the worker is alive and processing. Status readers use this
-        # to distinguish a live long job from a hung/dead one.
-        report = latest_engine_status(
-            workspace_dir=workspace_dir,
-            source=source,
-            source_type=source_type,
-        )
-        update_payload: dict[str, Any] = {"heartbeat_at": _now_marker()}
-        if report:
-            summary = summarize_engine_status(report)
-            update_payload.update(
-                {
-                    "status": "running",
-                    "stage": summary["stage"],
-                    "message": summary["message"],
-                    "engine_run_dir": summary["engine_run_dir"],
-                    "engine_status": summary["engine_status"],
-                }
-            )
-            if summary["progress"] is not None:
-                update_payload["progress"] = summary["progress"]
-        update_job_status(job_dir, **update_payload)
+        try:
+            job = read_json(job_dir / "job.json")
+            if job.get("status") in {"completed", "failed", "canceled", "stale_failed"}:
+                return
+            update_payload: dict[str, Any] = {"heartbeat_at": _now_marker()}
+            try:
+                report = latest_engine_status(
+                    workspace_dir=workspace_dir,
+                    source=source,
+                    source_type=source_type,
+                )
+            except Exception:  # noqa: BLE001 - enrichment is optional
+                report = None
+            if report:
+                summary = summarize_engine_status(report)
+                update_payload.update(
+                    {
+                        "status": "running",
+                        "stage": summary["stage"],
+                        "message": summary["message"],
+                        "engine_run_dir": summary["engine_run_dir"],
+                        "engine_status": summary["engine_status"],
+                    }
+                )
+                if summary["progress"] is not None:
+                    update_payload["progress"] = summary["progress"]
+            update_job_status(job_dir, **update_payload)
+        except Exception:  # noqa: BLE001 - never let the heartbeat thread die
+            continue
 
 
 def _now_marker() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    # Microsecond precision (matches jobs._now_iso) so staleness math near the
+    # threshold isn't skewed by second-level rounding.
+    return datetime.now(UTC).isoformat()
 
 
 if __name__ == "__main__":
