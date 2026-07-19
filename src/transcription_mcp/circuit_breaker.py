@@ -149,6 +149,33 @@ def record_other_failure(workspace_dir: Path, provider: str) -> None:
     _save(workspace_dir, state)
 
 
+def last_failure_at(workspace_dir: Path, provider: str) -> float:
+    """Unix timestamp of the provider's last recorded failure (0.0 if none)."""
+    entry = _provider_entry(_load(workspace_dir), provider)
+    try:
+        return float(entry.get("last_failure_at") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def reset(workspace_dir: Path, provider: str) -> None:
+    """Close the breaker and clear the blocked streak (world-changed reset).
+
+    Used when the environment demonstrably changed since the failures that
+    opened the breaker - e.g. a human just minted fresh YouTube cookies, which
+    invalidates every "blocked as bot" data point the breaker accumulated.
+    Totals are kept; only the open state and streak are cleared.
+    """
+    if not _enabled():
+        return
+    state = _load(workspace_dir)
+    entry = _provider_entry(state, provider)
+    entry["consecutive_blocked"] = 0
+    entry["open_until"] = 0.0
+    state[provider] = entry
+    _save(workspace_dir, state)
+
+
 def snapshot(workspace_dir: Path) -> dict[str, Any]:
     """Read-only view for /health: per-provider stats + open/closed status."""
     now = time.time()

@@ -49,7 +49,9 @@ _BLOCKED_SIGNATURES = (
 
 _RATE_LIMIT_SIGNATURES = (
     "http error 429",
-    "429",
+    "status 429",
+    "status code 429",
+    "429 too many requests",
     "too many requests",
     "rate limit",
     "rate_limit",

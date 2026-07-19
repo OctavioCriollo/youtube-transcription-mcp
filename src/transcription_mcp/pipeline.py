@@ -353,6 +353,20 @@ def _transcribe_url_chain(
             continue
 
         breaker_wait = circuit_breaker.seconds_remaining(workspace_dir, provider)
+        if breaker_wait > 0 and _cookies_newer_than_breaker(
+            workspace_dir=workspace_dir,
+            provider=provider,
+            cookies_file=ytdlp_cookies_file,
+        ):
+            # World-changed override: the breaker opened on "blocked as bot"
+            # failures, but a fresh login has minted cookies SINCE then - every
+            # data point behind the cooldown is stale. Reset and try the cheap
+            # tier immediately instead of paying the fallback for up to 300s.
+            circuit_breaker.reset(workspace_dir, provider)
+            breaker_wait = 0.0
+            logger.info(
+                "%s breaker reset: cookies are newer than its last failure", provider
+            )
         if breaker_wait > 0:
             failed_attempts[provider] = (
                 f"[breaker_open] Skipped after repeated blocked failures; "
@@ -893,6 +907,29 @@ def _all_failed(
     exc = TranscriptionFailed(message)
     exc.youtube_login_would_help = bool(hint)  # type: ignore[attr-defined]
     return exc
+
+
+def _cookies_newer_than_breaker(
+    *,
+    workspace_dir: Path,
+    provider: str,
+    cookies_file: Path | None,
+) -> bool:
+    """True if the effective cookies file was minted AFTER the provider's last
+    failure — i.e. the breaker's evidence predates the current login.
+
+    Only download-tier providers care (they are the ones YouTube bot-walls);
+    ElevenLabs never uses these cookies, so its breaker state stands.
+    """
+    if provider not in {GROQ_PROVIDER, LOCAL_PROVIDER}:
+        return False
+    if cookies_file is None:
+        return False
+    try:
+        cookies_mtime = Path(cookies_file).stat().st_mtime
+    except OSError:
+        return False
+    return cookies_mtime > circuit_breaker.last_failure_at(workspace_dir, provider)
 
 
 def _provider_started_message(provider: str, source_kind: str) -> str:

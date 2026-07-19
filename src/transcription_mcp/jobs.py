@@ -75,6 +75,17 @@ def start_transcription_job(
     if source_type == "file" and not Path(source).expanduser().is_file():
         raise FileNotFoundError(Path(source).expanduser())
 
+    # Canonical video identity: collapse YouTube URL variants (youtu.be, watch?v=,
+    # shorts, tracking params) to one URL BEFORE anything hashes it. Cache items,
+    # dedup identity, and engine storage all key off this string; without this,
+    # the same video reached via two link styles gets transcribed - and billed -
+    # twice. The original string is kept for transparency.
+    source_original = source
+    if source_type == "youtube":
+        from transcription_mcp.youtube_subtitles import canonical_youtube_url
+
+        source = canonical_youtube_url(source)
+
     cleanup_expired_jobs(workspace_dir=workspace_dir, ttl_hours=job_ttl_hours)
 
     # Dedup guard: an ACTIVE job for the same source and options is reused
@@ -107,10 +118,31 @@ def start_transcription_job(
 
     active_jobs = count_active_jobs(workspace_dir=workspace_dir)
     if active_jobs >= max_concurrent_jobs:
-        raise RuntimeError(
-            f"maximum concurrent transcription jobs reached "
-            f"({active_jobs}/{max_concurrent_jobs})"
-        )
+        # Structured rejection, not a bare raise: everything else in this MCP
+        # answers with agent guidance, and a raw exception here made the agent
+        # improvise (retry loops, duplicate attempts). Tell it plainly to wait.
+        # Returned as-is (no _with_agent_guidance) so this bespoke guidance is
+        # not overwritten by the generic status branch.
+        return {
+            "status": "rejected",
+            "reason": "max_concurrent_jobs",
+            "active_jobs": active_jobs,
+            "max_concurrent_jobs": max_concurrent_jobs,
+            "user_visible_message": (
+                f"The server is already running {active_jobs} transcription "
+                f"job(s) (the max). This request was not started."
+            ),
+            "recommended_next_tool": None,
+            "recommended_poll_seconds": DEFAULT_RECOMMENDED_POLL_SECONDS,
+            "agent_instructions": [
+                "Do NOT start another transcription now; the concurrency limit "
+                "is reached.",
+                "Tell the user it is queued behind the running job(s), wait "
+                "recommended_poll_seconds, then try again.",
+                "If you started an earlier job, follow THAT run_id with "
+                "watch_transcription instead of starting a new one.",
+            ],
+        }
 
     job_dir = _new_job_dir(workspace_dir)
     run_id = job_dir.name
@@ -123,6 +155,7 @@ def start_transcription_job(
         "schema_version": JOB_SCHEMA_VERSION,
         "run_id": run_id,
         "source": source,
+        "source_original": source_original if source_original != source else None,
         "source_type": source_type,
         "url": source if source_type in {"youtube", "media_url"} else None,
         "language": language,
@@ -140,6 +173,7 @@ def start_transcription_job(
         "schema_version": JOB_SCHEMA_VERSION,
         "run_id": run_id,
         "source": source,
+        "source_original": source_original if source_original != source else None,
         "source_type": source_type,
         "url": source if source_type in {"youtube", "media_url"} else None,
         "language": language,
@@ -159,7 +193,11 @@ def start_transcription_job(
     write_json_atomic(job_dir / "request.json", request)
     write_json_atomic(job_dir / "job.json", job)
 
-    command = [sys.executable, "-m", "transcription_mcp.worker", str(job_dir)]
+    # -u (unbuffered): a SIGKILL/OOM discards buffered stdout, which is exactly
+    # how a crash near the finalization step erased the forensic trail once. With
+    # unbuffered output, whatever the worker printed is already on disk when it
+    # dies, so a post-mortem has something to read.
+    command = [sys.executable, "-u", "-m", "transcription_mcp.worker", str(job_dir)]
     creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
     with (job_dir / "worker.stdout.log").open("ab") as stdout, (
         job_dir / "worker.stderr.log"
@@ -564,6 +602,10 @@ async def run_transcription_job_with_budget(
     result or hand the still-running job off to watch_transcription.
     """
     status = start_transcription_job(workspace_dir=workspace_dir, **start_kwargs)
+    if "run_id" not in status:
+        # No job was started (e.g. rejected for max concurrency). Nothing to
+        # wait on - pass the structured response straight back to the agent.
+        return status
     run_id = str(status["run_id"])
     deadline = time.monotonic() + max(5.0, float(budget_seconds))
     revision = _int_or_none(status.get("revision"))
@@ -917,6 +959,7 @@ def _public_job(job_dir: Path, job: dict[str, Any]) -> dict[str, Any]:
         "schema_version",
         "run_id",
         "source",
+        "source_original",
         "source_type",
         "url",
         "language",

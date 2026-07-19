@@ -63,6 +63,25 @@ def extract_video_id(url: str) -> str:
     raise ValueError(f"could not extract a YouTube video id from URL: {url!r}")
 
 
+def canonical_youtube_url(url: str) -> str:
+    """Collapse every YouTube URL variant of one video to a canonical URL.
+
+    youtu.be/X, youtube.com/watch?v=X, /shorts/X, and any of them with tracking
+    params (?si=...) are the SAME video, but the storage layer identifies items
+    by hashing the URL string - so each variant used to become a separate cache
+    item and a separate dedup identity, and the same video could be transcribed
+    (and billed) twice. Canonicalizing at the job boundary makes cache and dedup
+    see one identity per video. Non-YouTube / unparseable URLs pass through
+    unchanged (media_url sources must not be rewritten).
+    """
+    stripped = url.strip()
+    try:
+        video_id = extract_video_id(stripped)
+    except ValueError:
+        return stripped
+    return f"https://www.youtube.com/watch?v={video_id}"
+
+
 def fetch_subtitles_transcript(
     url: str,
     *,
