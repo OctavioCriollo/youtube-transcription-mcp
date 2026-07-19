@@ -371,7 +371,7 @@ def _transcribe_url_chain(
         _emit_status(
             status_callback,
             stage=f"{provider}_started",
-            message=f"Trying {provider} transcription for {source_kind}.",
+            message=_provider_started_message(provider, source_kind),
             method=provider,
             failed_attempts=failed_attempts.copy() or None,
         )
@@ -893,6 +893,30 @@ def _all_failed(
     exc = TranscriptionFailed(message)
     exc.youtube_login_would_help = bool(hint)  # type: ignore[attr-defined]
     return exc
+
+
+def _provider_started_message(provider: str, source_kind: str) -> str:
+    """Say what each provider actually DOES, not just its name.
+
+    Agents narrate these messages to users and reason from them. The mechanics
+    differ per tier - Groq needs a server-side yt-dlp download, ElevenLabs
+    fetches remotely on its own infra - and conflating them makes agents blame
+    the wrong step (e.g. "ElevenLabs is stuck downloading" when nothing is
+    downloaded here at all).
+    """
+    if provider == ELEVENLABS_PROVIDER:
+        return (
+            f"Trying elevenlabs transcription for {source_kind}: handing the source "
+            "URL to ElevenLabs, which fetches and transcribes it remotely on its own "
+            "servers. Nothing is downloaded on this server for this tier; the call "
+            "is opaque and long sources can take minutes without visible progress."
+        )
+    if provider == GROQ_PROVIDER:
+        return (
+            f"Trying groq transcription for {source_kind}: downloading the audio on "
+            "this server with yt-dlp, then sending the file to Groq."
+        )
+    return f"Trying {provider} transcription for {source_kind}."
 
 
 def _youtube_login_hint(

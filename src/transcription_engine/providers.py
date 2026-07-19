@@ -24,6 +24,24 @@ ELEVENLABS_COST_PER_HOUR_USD = 0.22
 GROQ_COST_PER_HOUR_USD = 0.04
 
 
+def _float_env(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+# Ceiling for a single ElevenLabs HTTP call. With a YouTube source_url, ElevenLabs
+# fetches the video on ITS OWN infrastructure; when that fetch stalls (YouTube
+# throttling ElevenLabs too), the call hangs with no bytes sent. The old 3600s
+# (1 hour) meant one stalled attempt froze the whole job for an hour before the
+# transient retry fired. Bound it so a stall retries in minutes; still generous
+# enough for genuinely long videos, and overridable via env.
+ELEVENLABS_DEFAULT_TIMEOUT_S = _float_env("ELEVENLABS_TIMEOUT_S", 900.0)
+
+
 class FasterWhisperNotInstalledError(RuntimeError):
     pass
 
@@ -206,7 +224,7 @@ class ElevenLabsProvider:
         self,
         *,
         model: str = ELEVENLABS_DEFAULT_MODEL,
-        timeout_s: float = 3600.0,
+        timeout_s: float = ELEVENLABS_DEFAULT_TIMEOUT_S,
         tag_audio_events: bool = True,
         api_key: str | None = None,
     ) -> None:
@@ -329,7 +347,11 @@ class ElevenLabsProvider:
             ) from exc
 
         try:
-            with httpx.Client(timeout=self.timeout_s) as client:
+            # Granular timeout: connect fails fast (30s), while read/write/pool get
+            # the full budget. self.timeout_s bounds a stalled ElevenLabs fetch so
+            # the transient retry fires in minutes instead of after an hour.
+            timeout = httpx.Timeout(self.timeout_s, connect=30.0)
+            with httpx.Client(timeout=timeout) as client:
                 if file_path is None:
                     response = client.post(
                         self.endpoint,

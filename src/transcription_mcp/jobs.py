@@ -736,10 +736,23 @@ def summarize_engine_status(report: dict[str, Any]) -> dict[str, Any]:
         progress = 0.20
 
     stage = str(report.get("stage") or "running")
+    provider = str((report.get("model") or {}).get("provider") or "")
     if expected_chunks:
         message = f"{stage}: {partials}/{expected_chunks} transcription chunk(s) completed."
     elif audio_chunks:
         message = f"{stage}: {audio_chunks} audio chunk(s) prepared."
+    elif provider == "elevenlabs":
+        # The ElevenLabs source_url path is ONE opaque remote call: ElevenLabs
+        # fetches the source on ITS OWN infrastructure and transcribes it there.
+        # Nothing is downloaded on this server and no intermediate artifacts
+        # appear, so the stage sits still for minutes on long videos. Say so
+        # explicitly - agents otherwise invent a stuck-download story.
+        message = (
+            f"{stage}: ElevenLabs is fetching and transcribing the source remotely "
+            "on its own servers (nothing is downloaded on this server). This is a "
+            "single opaque call with no intermediate progress; long videos can sit "
+            "in this state for several minutes while the worker stays healthy."
+        )
     else:
         message = f"{stage}: transcription is running."
     return {
@@ -974,6 +987,11 @@ def _agent_guidance(payload: dict[str, Any], *, response_type: str) -> dict[str,
                 "saw; it waits server-side and returns on the next milestone.",
                 "The job is healthy while heartbeat_age_seconds stays under ~30; an "
                 "unchanged stage does NOT mean it is stuck.",
+                "failed_attempts lists providers ALREADY tried and abandoned; their "
+                "errors are history, not the current problem. The ACTIVE provider and "
+                "what it is doing are described in `message` - do not attribute a "
+                "previous provider's error (e.g. a yt-dlp download block from groq) "
+                "to the provider currently running.",
                 "Do NOT start another transcription for the same source while this job "
                 "is active - that duplicates provider cost.",
                 "When status becomes completed, call get_transcription_result before "

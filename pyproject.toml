@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "youtube-transcription-mcp"
-version = "0.4.1"
+version = "0.4.2"
 description = "MCP server that transcribes YouTube videos via a Groq → ElevenLabs → captions fallback chain."
 requires-python = ">=3.11"
 readme = "README.md"

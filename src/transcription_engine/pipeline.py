@@ -11,6 +11,7 @@ from transcription_engine.models import CanonicalTranscript
 from transcription_engine.providers import (
     ELEVENLABS_COST_PER_HOUR_USD,
     ELEVENLABS_DEFAULT_MODEL,
+    ELEVENLABS_DEFAULT_TIMEOUT_S,
     ELEVENLABS_FILE_LIMIT_BYTES,
     ELEVENLABS_PROVIDER,
     GROQ_COST_PER_HOUR_USD,
@@ -77,7 +78,7 @@ def transcribe_file(
     diarize: bool = False,
     num_speakers: int | None = None,
     tag_audio_events: bool = True,
-    provider_timeout_s: float = 3600.0,
+    provider_timeout_s: float = ELEVENLABS_DEFAULT_TIMEOUT_S,
     remote_audio_format: str = "m4a",
     remote_audio_bitrate_kbps: int = 128,
 ) -> Path:
@@ -343,7 +344,7 @@ def transcribe_youtube(
     diarize: bool = False,
     num_speakers: int | None = None,
     tag_audio_events: bool = True,
-    provider_timeout_s: float = 3600.0,
+    provider_timeout_s: float = ELEVENLABS_DEFAULT_TIMEOUT_S,
     youtube_downloader: YtDlpYoutubeDownloader | None = None,
     media: FfmpegMedia | None = None,
     local_provider_factory: Callable[..., FasterWhisperProvider] | None = None,
