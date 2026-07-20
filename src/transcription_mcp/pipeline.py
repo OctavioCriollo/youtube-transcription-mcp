@@ -967,7 +967,12 @@ def _youtube_login_hint(
     blocked, they are likely stale and a fresh login helps.
     """
     reason = failed_attempts.get(GROQ_PROVIDER, "")
-    if "[blocked]" not in reason or "sign in to confirm" not in reason.lower():
+    bot_walled = "[blocked]" in reason and "sign in to confirm" in reason.lower()
+    # The breaker ONLY opens on blocked-class failures, so a breaker_open skip
+    # is the same story one step removed: groq is out because of the bot wall.
+    # Without this, every job during the cooldown window lost the login hint.
+    breaker_skipped = "[breaker_open]" in reason
+    if not bot_walled and not breaker_skipped:
         return {}
     if cookies_in_effect:
         message = (

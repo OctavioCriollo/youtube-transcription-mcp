@@ -1001,7 +1001,32 @@ def _public_job(job_dir: Path, job: dict[str, Any]) -> dict[str, Any]:
         heartbeat_ts = _parse_iso_timestamp(str(job.get("heartbeat_at") or ""))
         if heartbeat_ts is not None:
             public["heartbeat_age_seconds"] = max(0, round(now_ts - heartbeat_ts))
+    public.update(_login_hint_from_failed_attempts(job.get("failed_attempts")))
     return _with_agent_guidance(public, response_type="status")
+
+
+def _login_hint_from_failed_attempts(failed_attempts: Any) -> dict[str, Any]:
+    """Login hint for STATUS payloads, derived from the job's failed_attempts.
+
+    The pipeline attaches youtube_login_would_help to the final result, but the
+    best moment to offer the login is WHILE the slow fallback tier is still
+    running - the human can authenticate in parallel and the next job takes the
+    cheap tier. Signature logic mirrors pipeline._youtube_login_hint (kept
+    duplicated on purpose: jobs must not import pipeline).
+    """
+    reason = str((failed_attempts or {}).get("groq") or "")
+    bot_walled = "[blocked]" in reason and "sign in to confirm" in reason.lower()
+    if not bot_walled and "[breaker_open]" not in reason:
+        return {}
+    return {
+        "youtube_login_would_help": True,
+        "youtube_login_message": (
+            "The cheap Groq tier is blocked: this server has no valid YouTube "
+            "session. Offer the user a login via request_youtube_login - they can "
+            "complete it NOW while the fallback tier finishes this job, and the "
+            "next transcription will take the cheap tier."
+        ),
+    }
 
 
 def _with_agent_guidance(payload: dict[str, Any], *, response_type: str) -> dict[str, Any]:

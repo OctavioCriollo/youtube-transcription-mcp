@@ -11,9 +11,12 @@ from typing import Annotated, Any
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
-from transcription_mcp import youtube_login
-from transcription_mcp.authgate_client import AuthgateClient
+from transcription_mcp import circuit_breaker, transcription_plan, youtube_login
+from transcription_mcp.authgate_client import AuthgateClient, AuthgateUnavailable
 from transcription_mcp.config import Config
+from transcription_mcp.managed_cookies import is_fresh as _cookies_fresh
+from transcription_mcp.pipeline import parse_provider_order
+from transcription_mcp.youtube_subtitles import canonical_youtube_url
 from transcription_mcp.jobs import (
     cancel_transcription_job,
     create_transcription_job_bundle,
@@ -47,6 +50,13 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
         ] = None,
     ) -> dict[str, Any]:
         """Transcribe a YouTube video, waiting up to the server's sync budget.
+
+        Recommended first step: call get_transcription_plan(url) once. If it
+        returns recommendation "login_recommended", handle the login per its
+        guidance BEFORE starting (so the fast/cheap tier works); for "ready",
+        "cached", "login_in_progress" or "fallback_only", just call this tool.
+        This keeps the login transparent - the user is only ever prompted when
+        no session exists to reuse.
 
         Short/cached videos finish within the budget and return the final
         result directly (use result.transcript). Longer videos hand off: the
@@ -183,6 +193,10 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
         ] = None,
     ) -> dict[str, Any]:
         """Start a background YouTube transcription job and return a run_id.
+
+        Recommended first step: call get_transcription_plan(url) once and act on
+        its recommendation (handle login only when it says "login_recommended";
+        otherwise start directly). This keeps the login transparent to the user.
 
         If an identical job is already active, its run_id is returned instead
         (deduplicated=true) - never start a second job for the same source.
@@ -463,6 +477,86 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             idle_ttl_s=config.managed_cookies_idle_ttl_s,
         )
 
+    @mcp.tool()
+    def get_transcription_plan(
+        url: Annotated[
+            str,
+            Field(description="The YouTube/media URL (or file path) you intend to transcribe."),
+        ],
+        source_type: Annotated[
+            str,
+            Field(description="'youtube' (default), 'media_url', or 'file'."),
+        ] = "youtube",
+    ) -> dict[str, Any]:
+        """Pre-flight a transcription: which tiers run, and is a login needed?
+
+        CALL THIS FIRST for a YouTube/media URL, before starting the
+        transcription. It declares the provider tiers in order and marks whether
+        the fast/cheap tier needs a one-time YouTube login ON THIS SERVER and
+        whether a session already exists — so the login stays transparent to the
+        user. Act on `recommendation`:
+          - "ready"/"cached": start the transcription; say NOTHING about login.
+          - "login_recommended": a session is missing. Offer the user
+            request_youtube_login for the fast tier, OR proceed on the fallback
+            if they decline. Only ask when there is genuinely no session to reuse.
+          - "login_in_progress": a login link is already open; poll
+            get_youtube_auth_status, do not open another.
+          - "fallback_only": login isn't configured; just transcribe (fallback).
+        The user should only ever see a login prompt when no session exists to
+        reuse; every other case proceeds automatically.
+        """
+        stype = (source_type or "youtube").strip().lower()
+        if stype == "youtube":
+            canon = canonical_youtube_url(url)
+            providers = parse_provider_order(config.youtube_provider_order, allow_subtitles=True)
+        elif stype == "media_url":
+            canon = url.strip()
+            providers = parse_provider_order(config.media_provider_order, allow_subtitles=False)
+        else:
+            canon = url.strip()
+            providers = parse_provider_order(config.file_provider_order, allow_subtitles=False)
+
+        # A session is any operator-provided cookies file, or fresh managed cookies.
+        session_ready = bool(config.ytdlp_cookies_file) or _cookies_fresh(
+            config.managed_cookies_file, idle_ttl_s=config.managed_cookies_idle_ttl_s
+        )
+        # Is the cheap tier actually bot-walled on THIS IP? Breaker history knows.
+        snap = circuit_breaker.snapshot(config.workspace_dir).get("groq", {})
+        groq_blocked_here = bool(snap.get("open") or int(snap.get("consecutive_blocked", 0)) > 0)
+
+        client = _authgate_client()
+        login_configured = client.configured
+        login_in_progress = False
+        if login_configured:
+            try:
+                active = client.active_status()
+                login_in_progress = bool(
+                    active.get("active")
+                    and active.get("state") in {"launching", "awaiting_login"}
+                )
+            except AuthgateUnavailable:
+                login_configured = False
+
+        cached = (
+            transcription_plan.has_fresh_cached_result(
+                workspace_dir=config.workspace_dir,
+                url=canon,
+                cache_ttl_hours=config.cache_ttl_hours,
+            )
+            if stype in {"youtube", "media_url"}
+            else False
+        )
+
+        return transcription_plan.build_plan(
+            source_type=stype,
+            provider_order=providers,
+            youtube_session_ready=session_ready,
+            groq_blocked_here=groq_blocked_here,
+            login_in_progress=login_in_progress,
+            login_configured=login_configured,
+            cached=cached,
+        )
+
     @mcp.prompt(
         name="transcribe_with_progress",
         title="Transcribe with visible progress",
@@ -476,6 +570,11 @@ Source: {source}
 Source type: {source_type}
 
 Workflow:
+0. For a YouTube/media URL, call get_transcription_plan(source) FIRST. Act on its
+   recommendation: "login_recommended" -> follow its login guidance before starting
+   (reuse any existing session automatically; only ask the user when none exists);
+   "ready"/"cached"/"login_in_progress"/"fallback_only" -> proceed without mentioning
+   login. Keep the login transparent to the user.
 1. For YouTube URLs, call start_youtube_transcription. For other media URLs, call
    start_media_url_transcription. For local files, call start_file_transcription.
    If the response has deduplicated=true, an identical job was already active and
